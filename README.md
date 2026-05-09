@@ -2,7 +2,7 @@
 
 Real-time person detection and follow-me behavior for the Agibot X2 humanoid robot, built on YOLOv8 and ROS2 Humble.
 
-**This repo is a colcon workspace** containing the `yolo_person_detector` ROS2 package under `src/yolo_person_detector/`. Clone it and build with `colcon`.
+**This repo contains the `yolo_person_detector` ROS2 package.** On the robot, clone it into `~/ros2_ws/src/robohack2026/` and build with `colcon`.
 
 ## What's in the box
 
@@ -37,10 +37,10 @@ pip install pytest
 conda activate yolo_detector
 
 # List available cameras
-python3 src/yolo_person_detector/scripts/run_detector_standalone.py --list-cameras
+python3 yolo_person_detector/scripts/run_detector_standalone.py --list-cameras
 
 # Run detection and save a debug video (index 1 = Continuity Camera on most Macs)
-python3 src/yolo_person_detector/scripts/run_detector_standalone.py --webcam --cam-index 1 --save-video output.mp4
+python3 yolo_person_detector/scripts/run_detector_standalone.py --webcam --cam-index 1 --save-video output.mp4
 ```
 
 Press `q` to quit.
@@ -48,7 +48,7 @@ Press `q` to quit.
 ### Run unit tests
 
 ```bash
-pytest src/yolo_person_detector/test/ -v
+pytest yolo_person_detector/test/ -v
 ```
 
 ---
@@ -73,15 +73,16 @@ pip3 install --user ultralytics opencv-python numpy
 
 ```bash
 # On the robot (e.g. ssh agi@10.0.1.40)
-cd ~
-git clone git@github.com:alessiosalvatore1703-ops/robohack2026.git ros2_ws
-cd ros2_ws
+mkdir -p ~/ros2_ws/src
+cd ~/ros2_ws/src
+git clone git@github.com:alessiosalvatore1703-ops/robohack2026.git
+cd ~/ros2_ws
 
 # Source your environments (adjust aimdk path as needed)
 source /opt/ros/humble/setup.bash
 source ~/aimdk/install/setup.bash   # wherever aimdk_msgs lives on your robot
 
-# Build (colcon auto-discovers packages under src/)
+# Build (colcon discovers yolo_person_detector inside src/robohack2026/)
 colcon build --packages-select yolo_person_detector --symlink-install
 source install/setup.bash
 ```
@@ -224,8 +225,8 @@ Use `device:=cuda` if the robot has a GPU. Check frame rate: `ros2 topic hz /yol
 Copy `yolov8n.pt` from your Mac:
 ```bash
 python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
-scp ~/.cache/ultralytics/yolov8n.pt agi@10.0.1.40:~/ros2_ws/src/yolo_person_detector/
-# Then launch with model:=~/ros2_ws/src/yolo_person_detector/yolov8n.pt
+scp ~/.cache/ultralytics/yolov8n.pt agi@10.0.1.40:~/ros2_ws/src/robohack2026/yolo_person_detector/
+# Then launch with model:=~/ros2_ws/src/robohack2026/yolo_person_detector/yolov8n.pt
 ```
 
 **Camera topic silent**

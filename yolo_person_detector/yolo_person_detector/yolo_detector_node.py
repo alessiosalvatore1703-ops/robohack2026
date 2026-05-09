@@ -15,8 +15,8 @@ from vision_msgs.msg import (
     Detection2D,
     ObjectHypothesisWithPose,
     BoundingBox2D,
+    Pose2D,
 )
-from geometry_msgs.msg import Pose2D
 
 import numpy as np
 import cv2
