@@ -63,28 +63,10 @@ SOURCE_NAME = "person_torso_tracker"
 DEFAULT_MODEL_PATH = "yolov8n.pt"
 TTS_SERVICE = "/aimdk_5Fmsgs/srv/PlayTts"
 
-CAMERA_TOPICS = {
-    "left_rgb_image": {
-        "image": "/aima/hal/sensor/stereo_head_front_left/rgb_image",
-        "info": "/aima/hal/sensor/stereo_head_front_left/camera_info",
-        "compressed": False,
-    },
-    "left_rgb_image_compressed": {
-        "image": "/aima/hal/sensor/stereo_head_front_left/rgb_image/compressed",
-        "info": "/aima/hal/sensor/stereo_head_front_left/camera_info",
-        "compressed": True,
-    },
-    "right_rgb_image": {
-        "image": "/aima/hal/sensor/stereo_head_front_right/rgb_image",
-        "info": "/aima/hal/sensor/stereo_head_front_right/camera_info",
-        "compressed": False,
-    },
-    "right_rgb_image_compressed": {
-        "image": "/aima/hal/sensor/stereo_head_front_right/rgb_image/compressed",
-        "info": "/aima/hal/sensor/stereo_head_front_right/camera_info",
-        "compressed": True,
-    },
-}
+FORCED_CAMERA_TOPIC_TYPE = "left_rgb_image"
+FORCED_CAMERA_TOPIC = "/aima/hal/sensor/stereo_head_front_left/rgb_image"
+FORCED_CAMERA_INFO_TOPIC = "/aima/hal/sensor/stereo_head_front_left/camera_info"
+FORCED_LIDAR_TOPIC = "/aima/hal/sensor/lidar_chest_front/lidar_pointcloud"
 
 SENSOR_QOS = QoSProfile(
     reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -201,14 +183,6 @@ def stamp_to_sec(msg) -> float:
     return float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
 
 
-def derive_camera_info_topic(image_topic: str) -> str:
-    if image_topic.endswith("/rgb_image/compressed"):
-        return image_topic[: -len("/rgb_image/compressed")] + "/camera_info"
-    if image_topic.endswith("/rgb_image"):
-        return image_topic[: -len("/rgb_image")] + "/camera_info"
-    return ""
-
-
 def point_xyz(point) -> tuple[float, float, float]:
     try:
         return float(point["x"]), float(point["y"]), float(point["z"])
@@ -229,12 +203,6 @@ class X2PersonFollow(Node):
     def __init__(self) -> None:
         super().__init__("x2_person_track_torso")
 
-        self.declare_parameter("camera_topic_type", "left_rgb_image")
-        self.declare_parameter("camera_topic", "")
-        self.declare_parameter("camera_info_topic", "")
-        self.declare_parameter(
-            "lidar_topic", "/aima/hal/sensor/lidar_chest_front/lidar_pointcloud"
-        )
         self.declare_parameter("model_path", DEFAULT_MODEL_PATH)
         self.declare_parameter("confidence_threshold", 0.5)
         self.declare_parameter("nms_threshold", 0.45)
@@ -276,13 +244,11 @@ class X2PersonFollow(Node):
         self.declare_parameter("waist_hold_on_lost", True)
         self.declare_parameter("waist_use_ruckig", True)
 
-        self.camera_topic_type = self.get_parameter("camera_topic_type").value
-        self.camera_topic_override = self.get_parameter("camera_topic").value
-        self.camera_info_topic_override = self.get_parameter("camera_info_topic").value
-        self.camera_topic, self.camera_info_topic, self.camera_is_compressed = (
-            self.resolve_camera_topics()
-        )
-        self.lidar_topic = self.get_parameter("lidar_topic").value
+        self.camera_topic_type = FORCED_CAMERA_TOPIC_TYPE
+        self.camera_topic = FORCED_CAMERA_TOPIC
+        self.camera_info_topic = FORCED_CAMERA_INFO_TOPIC
+        self.camera_is_compressed = False
+        self.lidar_topic = FORCED_LIDAR_TOPIC
         model_path = self.get_parameter("model_path").value
         confidence = float(self.get_parameter("confidence_threshold").value)
         nms_threshold = float(self.get_parameter("nms_threshold").value)
@@ -415,28 +381,18 @@ class X2PersonFollow(Node):
         self.waist_command_velocities: Optional[list[float]] = None
         self.waist_ruckig = None
 
-        if self.camera_is_compressed:
-            self.image_sub = self.create_subscription(
-                CompressedImage,
-                self.camera_topic,
-                self.compressed_image_callback,
-                SENSOR_QOS,
-            )
-        else:
-            self.image_sub = self.create_subscription(
-                Image,
-                self.camera_topic,
-                self.image_callback,
-                SENSOR_QOS,
-            )
-        self.camera_info_sub = None
-        if self.camera_info_topic:
-            self.camera_info_sub = self.create_subscription(
-                CameraInfo,
-                self.camera_info_topic,
-                self.camera_info_callback,
-                CAMERA_INFO_QOS,
-            )
+        self.image_sub = self.create_subscription(
+            Image,
+            self.camera_topic,
+            self.image_callback,
+            SENSOR_QOS,
+        )
+        self.camera_info_sub = self.create_subscription(
+            CameraInfo,
+            self.camera_info_topic,
+            self.camera_info_callback,
+            CAMERA_INFO_QOS,
+        )
         self.lidar_sub = self.create_subscription(
             PointCloud2,
             self.lidar_topic,
@@ -513,27 +469,6 @@ class X2PersonFollow(Node):
             f"waist_limits=v{self.waist_max_velocity:.2f}/a{self.waist_max_acceleration:.2f}/j{self.waist_max_jerk:.1f}, "
             f"waist_hold_on_lost={self.waist_hold_on_lost}"
         )
-
-    def resolve_camera_topics(self) -> tuple[str, str, bool]:
-        config = CAMERA_TOPICS.get(self.camera_topic_type)
-        if config is None:
-            self.get_logger().warn(
-                f"Unknown camera_topic_type={self.camera_topic_type!r}; "
-                "falling back to left_rgb_image"
-            )
-            self.camera_topic_type = "left_rgb_image"
-            config = CAMERA_TOPICS[self.camera_topic_type]
-
-        camera_topic = self.camera_topic_override or str(config["image"])
-        camera_info_topic = self.camera_info_topic_override or str(config["info"])
-        is_compressed = bool(config["compressed"])
-
-        if self.camera_topic_override:
-            is_compressed = camera_topic.endswith("/compressed")
-            if not self.camera_info_topic_override:
-                camera_info_topic = derive_camera_info_topic(camera_topic)
-
-        return camera_topic, camera_info_topic, is_compressed
 
     def update_arrivals(self, arrivals: deque) -> float:
         now = self.get_clock().now()

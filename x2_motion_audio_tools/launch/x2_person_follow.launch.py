@@ -8,10 +8,6 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-    camera_topic_type = LaunchConfiguration("camera_topic_type")
-    camera_topic = LaunchConfiguration("camera_topic")
-    camera_info_topic = LaunchConfiguration("camera_info_topic")
-    lidar_topic = LaunchConfiguration("lidar_topic")
     device = LaunchConfiguration("device")
     tts_enabled = LaunchConfiguration("tts_enabled")
     tts_text = LaunchConfiguration("tts_text")
@@ -42,29 +38,6 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            DeclareLaunchArgument(
-                "camera_topic_type",
-                default_value="left_rgb_image",
-                description=(
-                    "Stereo camera stream: left_rgb_image, right_rgb_image, "
-                    "left_rgb_image_compressed, or right_rgb_image_compressed."
-                ),
-            ),
-            DeclareLaunchArgument(
-                "camera_topic",
-                default_value="/aima/hal/sensor/stereo_head_front_left/rgb_image",
-                description="Left stereo RGB image topic used by the torso tracker.",
-            ),
-            DeclareLaunchArgument(
-                "camera_info_topic",
-                default_value="/aima/hal/sensor/stereo_head_front_left/camera_info",
-                description="Left stereo CameraInfo topic used by the torso tracker.",
-            ),
-            DeclareLaunchArgument(
-                "lidar_topic",
-                default_value="/aima/hal/sensor/lidar_chest_front/lidar_pointcloud",
-                description="sensor_msgs/PointCloud2 chest LiDAR topic used for distance.",
-            ),
             DeclareLaunchArgument(
                 "device",
                 default_value="cpu",
@@ -207,10 +180,6 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     {
-                        "camera_topic_type": camera_topic_type,
-                        "camera_topic": camera_topic,
-                        "camera_info_topic": camera_info_topic,
-                        "lidar_topic": lidar_topic,
                         "device": device,
                         "tts_enabled": ParameterValue(
                             tts_enabled, value_type=bool
