@@ -37,7 +37,7 @@ except ImportError:
 
 
 SOURCE_NAME = "coordinate_offset_arms"
-SCRIPT_VERSION = "single-line-offset-arm-hold-v2"
+SCRIPT_VERSION = "single-line-offset-shoulder-pitch-only-v3"
 
 SUBSCRIBER_QOS = QoSProfile(
     reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -101,9 +101,7 @@ ARM_MAX_JERK_RAD_S3 = 8.0
 ACTIVE_RAISE_JOINT_NAMES = frozenset(
     {
         "left_shoulder_pitch_joint",
-        "left_shoulder_roll_joint",
         "right_shoulder_pitch_joint",
-        "right_shoulder_roll_joint",
     }
 )
 
@@ -371,9 +369,7 @@ class CoordinateOffsetRaiseArms(Node):
 
         target_by_name = {
             "left_shoulder_pitch_joint": -math.radians(arm_angle_deg),
-            "left_shoulder_roll_joint": 0.25,
             "right_shoulder_pitch_joint": -math.radians(arm_angle_deg),
-            "right_shoulder_roll_joint": -0.25,
         }
 
         target = list(self.arm_positions)
@@ -390,7 +386,7 @@ class CoordinateOffsetRaiseArms(Node):
         self,
         positions: List[float],
         velocities: Optional[List[float]] = None,
-        command_joint_names: Optional[Collection[str]] = None,
+        active_joint_names: Collection[str] = ACTIVE_RAISE_JOINT_NAMES,
     ) -> JointCommandArray:
         cmd = JointCommandArray()
         cmd.header = MessageHeader()
@@ -399,12 +395,7 @@ class CoordinateOffsetRaiseArms(Node):
             velocities = [0.0] * len(ARM_JOINTS)
 
         for index, joint_info in enumerate(ARM_JOINTS):
-            if (
-                command_joint_names is not None
-                and joint_info.name not in command_joint_names
-            ):
-                continue
-
+            active = joint_info.name in active_joint_names
             joint = JointCommand()
             joint.name = joint_info.name
             joint.position = clamp(
@@ -412,10 +403,10 @@ class CoordinateOffsetRaiseArms(Node):
                 joint_info.lower_limit,
                 joint_info.upper_limit,
             )
-            joint.velocity = finite_or(velocities[index])
+            joint.velocity = finite_or(velocities[index]) if active else 0.0
             joint.effort = 0.0
-            joint.stiffness = joint_info.kp
-            joint.damping = joint_info.kd
+            joint.stiffness = joint_info.kp if active else 0.0
+            joint.damping = joint_info.kd if active else 0.0
             cmd.joints.append(joint)
 
         return cmd
@@ -424,10 +415,10 @@ class CoordinateOffsetRaiseArms(Node):
         self,
         positions: List[float],
         velocities: Optional[List[float]] = None,
-        command_joint_names: Optional[Collection[str]] = None,
+        active_joint_names: Collection[str] = ACTIVE_RAISE_JOINT_NAMES,
     ) -> None:
         self.arm_pub.publish(
-            self.make_arm_command(positions, velocities, command_joint_names)
+            self.make_arm_command(positions, velocities, active_joint_names)
         )
 
     def raise_arms_to_angle(
@@ -437,23 +428,19 @@ class CoordinateOffsetRaiseArms(Node):
         arm_control_hz: float,
         arm_hold_hz: float,
         hold_seconds: Optional[float],
-        command_all_joints: bool,
     ) -> None:
         if self.arm_positions is None:
             raise RuntimeError("Arm state is unavailable.")
 
         target = self.arm_target_from_current(arm_angle_deg)
-        command_joint_names = (
-            None if command_all_joints else ACTIVE_RAISE_JOINT_NAMES
-        )
         self.get_logger().info(
             f"Raising both arms to {arm_angle_deg:.1f} deg shoulder pitch."
         )
-        if command_joint_names is not None:
-            self.get_logger().info(
-                "Commanding shoulder pitch/roll only; leaving elbows and wrists "
-                "under their current controller to avoid fighting noisy joints."
-            )
+        self.get_logger().info(
+            "Sending the full 14-joint arm message for HAL compatibility, "
+            "but only left/right shoulder pitch get nonzero stiffness, damping, "
+            "velocity, and a moving target."
+        )
 
         if ruckig is None:
             self.get_logger().warning(
@@ -464,21 +451,18 @@ class CoordinateOffsetRaiseArms(Node):
                 target=target,
                 move_seconds=move_seconds,
                 arm_control_hz=arm_control_hz,
-                command_joint_names=command_joint_names,
             )
         else:
             self.raise_arms_with_ruckig(
                 target=target,
                 arm_control_hz=arm_control_hz,
                 minimum_duration=move_seconds,
-                command_joint_names=command_joint_names,
             )
 
         self.hold_arm_pose(
             target=target,
             arm_hold_hz=arm_hold_hz,
             hold_seconds=hold_seconds,
-            command_joint_names=command_joint_names,
         )
 
     def raise_arms_with_ruckig(
@@ -486,7 +470,6 @@ class CoordinateOffsetRaiseArms(Node):
         target: List[float],
         arm_control_hz: float,
         minimum_duration: float,
-        command_joint_names: Optional[Collection[str]],
     ) -> None:
         if self.arm_positions is None:
             raise RuntimeError("Arm state is unavailable.")
@@ -529,7 +512,7 @@ class CoordinateOffsetRaiseArms(Node):
 
             positions = list(out.new_position)
             velocities = list(out.new_velocity)
-            self.publish_arm_pose(positions, velocities, command_joint_names)
+            self.publish_arm_pose(positions, velocities)
             inp.current_position = positions
             inp.current_velocity = velocities
             inp.current_acceleration = list(out.new_acceleration)
@@ -539,14 +522,13 @@ class CoordinateOffsetRaiseArms(Node):
                 break
             time.sleep(period)
 
-        self.publish_arm_pose(target, command_joint_names=command_joint_names)
+        self.publish_arm_pose(target)
 
     def raise_arms_with_fallback(
         self,
         target: List[float],
         move_seconds: float,
         arm_control_hz: float,
-        command_joint_names: Optional[Collection[str]],
     ) -> None:
         if self.arm_positions is None:
             raise RuntimeError("Arm state is unavailable.")
@@ -564,7 +546,7 @@ class CoordinateOffsetRaiseArms(Node):
                 (position - previous) / period
                 for position, previous in zip(positions, previous_positions)
             ]
-            self.publish_arm_pose(positions, velocities, command_joint_names)
+            self.publish_arm_pose(positions, velocities)
             previous_positions = list(positions)
             rclpy.spin_once(self, timeout_sec=0.0)
 
@@ -572,14 +554,13 @@ class CoordinateOffsetRaiseArms(Node):
                 break
             time.sleep(period)
 
-        self.publish_arm_pose(target, command_joint_names=command_joint_names)
+        self.publish_arm_pose(target)
 
     def hold_arm_pose(
         self,
         target: List[float],
         arm_hold_hz: float,
         hold_seconds: Optional[float],
-        command_joint_names: Optional[Collection[str]],
     ) -> None:
         period = 1.0 / arm_hold_hz
 
@@ -588,10 +569,7 @@ class CoordinateOffsetRaiseArms(Node):
                 f"Holding arm pose at {arm_hold_hz:.1f} Hz until this node is interrupted."
             )
             while rclpy.ok():
-                self.publish_arm_pose(
-                    target,
-                    command_joint_names=command_joint_names,
-                )
+                self.publish_arm_pose(target)
                 rclpy.spin_once(self, timeout_sec=0.0)
                 time.sleep(period)
             return
@@ -603,7 +581,7 @@ class CoordinateOffsetRaiseArms(Node):
         self.get_logger().info(f"Holding arm pose for {hold_seconds:.1f} s.")
         hold_until = time.monotonic() + hold_seconds
         while rclpy.ok() and time.monotonic() < hold_until:
-            self.publish_arm_pose(target, command_joint_names=command_joint_names)
+            self.publish_arm_pose(target)
             rclpy.spin_once(self, timeout_sec=0.0)
             time.sleep(period)
 
@@ -768,10 +746,7 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument(
         "--arm-command-all-joints",
         action="store_true",
-        help=(
-            "Command all 14 arm joints instead of only shoulder pitch/roll. "
-            "Use only if your HAL arm controller requires full-joint commands."
-        ),
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--invert-turn-direction",
@@ -890,7 +865,6 @@ def main(args=None) -> int:
             arm_control_hz=parsed.arm_control_hz,
             arm_hold_hz=parsed.arm_hold_hz,
             hold_seconds=parsed.arm_hold_seconds,
-            command_all_joints=parsed.arm_command_all_joints,
         )
         return 0
     except KeyboardInterrupt:
