@@ -145,19 +145,19 @@ Run body following:
 ros2 launch x2_motion_audio_tools x2_person_follow.launch.py
 ```
 
-By default this uses `/aima/hal/sensor/stereo_head_front_left/rgb_image` and
+This launch is pinned to the left front stereo camera:
+`/aima/hal/sensor/stereo_head_front_left/rgb_image`, with intrinsics from
+`/aima/hal/sensor/stereo_head_front_left/camera_info`. It reads
 `/aima/hal/sensor/lidar_chest_front/lidar_pointcloud`, walks while the selected
 person remains visible, stops when the target is lost, and stops approaching at
 `stop_distance_m:=1.0` with a small `stop_deadband_m:=0.12`.
 
-To use the right stereo camera or compressed stream:
+Only override the camera topics if the HAL topic names differ on the robot:
 
 ```bash
 ros2 launch x2_motion_audio_tools x2_person_follow.launch.py \
-  camera_topic_type:=right_rgb_image
-
-ros2 launch x2_motion_audio_tools x2_person_follow.launch.py \
-  camera_topic_type:=left_rgb_image_compressed
+  camera_topic:=/aima/hal/sensor/stereo_head_front_left/rgb_image \
+  camera_info_topic:=/aima/hal/sensor/stereo_head_front_left/camera_info
 ```
 
 If you want detection logs only:

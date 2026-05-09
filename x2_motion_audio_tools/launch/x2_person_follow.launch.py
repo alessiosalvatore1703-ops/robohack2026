@@ -52,13 +52,13 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "camera_topic",
-                default_value="",
-                description="Optional image topic override. Empty uses camera_topic_type.",
+                default_value="/aima/hal/sensor/stereo_head_front_left/rgb_image",
+                description="Left stereo RGB image topic used for YOLO.",
             ),
             DeclareLaunchArgument(
                 "camera_info_topic",
-                default_value="",
-                description="Optional CameraInfo topic override. Empty uses camera_topic_type.",
+                default_value="/aima/hal/sensor/stereo_head_front_left/camera_info",
+                description="Left stereo CameraInfo topic.",
             ),
             DeclareLaunchArgument(
                 "lidar_topic",
