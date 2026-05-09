@@ -28,7 +28,7 @@ For person detection and torso tracking, install the YOLO package dependencies:
 
 ```bash
 python3 -m pip install -r src/yolo_person_detector/requirements.txt
-sudo apt install ros-humble-cv-bridge
+sudo apt install ros-humble-cv-bridge ros-humble-sensor-msgs-py
 ```
 
 ## Audio and Voice
@@ -125,15 +125,28 @@ ros2 run x2_motion_audio_tools x2_turn_to_person_tts \
 
 ## Person Torso Tracking
 
-`x2_person_follow` runs YOLO person detection on the head camera and turns
-`waist_yaw_joint` so the torso keeps facing the selected person while they stay
-visible. With `follow_enabled:=false`, it does not publish locomotion velocity,
-so the legs should not move.
+`x2_person_follow` runs YOLO person detection on either top front stereo camera,
+says "Hello" once per visible encounter, reads the chest `PointCloud2` LiDAR,
+logs camera/YOLO/LiDAR details, and turns `waist_yaw_joint` so the torso keeps
+facing the selected person. With `follow_enabled:=false`, it does not publish
+locomotion velocity, so the legs should not move.
 
 Run torso tracking without walking:
 
 ```bash
 ros2 launch x2_motion_audio_tools x2_person_follow.launch.py follow_enabled:=false
+```
+
+By default this uses `/aima/hal/sensor/stereo_head_front_left/rgb_image` and
+`/aima/hal/sensor/lidar_chest_front/lidar_pointcloud`. To use the right stereo
+camera or compressed stream:
+
+```bash
+ros2 launch x2_motion_audio_tools x2_person_follow.launch.py \
+  camera_topic_type:=right_rgb_image
+
+ros2 launch x2_motion_audio_tools x2_person_follow.launch.py \
+  camera_topic_type:=left_rgb_image_compressed
 ```
 
 If you want detection logs only, disable waist tracking too:
@@ -144,12 +157,38 @@ ros2 launch x2_motion_audio_tools x2_person_follow.launch.py \
   waist_tracking_enabled:=false
 ```
 
+Expected detection logs include person count, selected bbox/confidence, camera
+bearing, base bearing, camera FPS, LiDAR FPS, valid point count, sector point
+count, and the estimated distance.
+
 If the torso turns away from the person, flip the waist sign:
 
 ```bash
 ros2 launch x2_motion_audio_tools x2_person_follow.launch.py \
   follow_enabled:=false \
   waist_invert_direction:=true
+```
+
+If the LiDAR distance samples the wrong direction, tune the sector:
+
+```bash
+ros2 launch x2_motion_audio_tools x2_person_follow.launch.py \
+  follow_enabled:=false \
+  lidar_angle_offset_deg:=180 \
+  lidar_window_deg:=12
+```
+
+The waist tracker holds the last commanded torso pose when detections go stale.
+Default motion limits are intentionally gentle:
+`waist_max_velocity:=0.35`, `waist_max_acceleration:=0.25`, and
+`waist_max_jerk:=3.0`. To make it slower:
+
+```bash
+ros2 launch x2_motion_audio_tools x2_person_follow.launch.py \
+  follow_enabled:=false \
+  waist_max_velocity:=0.20 \
+  waist_max_acceleration:=0.15 \
+  waist_max_jerk:=1.5
 ```
 
 Walking follow remains optional and separate:

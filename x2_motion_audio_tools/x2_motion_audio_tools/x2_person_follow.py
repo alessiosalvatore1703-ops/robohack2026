@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Detect a person with the head camera, read lidar distance, and track them.
+"""Detect a person with a front stereo camera, read LiDAR distance, and track them.
 
-The node logs every detection in the console. By default it uses the X2 HAL
-waist interface to turn the torso toward the selected person while they remain
-visible. When follow_enabled is true and aimdk_msgs is available, it also
-publishes X2 locomotion velocity commands that turn toward the person and walk
-forward until stop_distance_m.
+The node logs what it receives from the camera, YOLO, and chest LiDAR. By
+default it says "Hello" when a person is first detected and uses the X2 HAL
+waist interface to turn only the torso toward the selected person.
 """
 
 from __future__ import annotations
@@ -15,13 +13,24 @@ import signal
 import statistics
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import Image, LaserScan
+from sensor_msgs.msg import CameraInfo, CompressedImage, Image, PointCloud2
+
+try:
+    from sensor_msgs_py import point_cloud2
+except ImportError:
+    point_cloud2 = None
 
 try:
     from cv_bridge import CvBridge
@@ -41,7 +50,7 @@ try:
         McLocomotionVelocity,
         MessageHeader,
     )
-    from aimdk_msgs.srv import SetMcInputSource
+    from aimdk_msgs.srv import PlayTts, SetMcInputSource
 
     AIMDK_AVAILABLE = True
 except ImportError:
@@ -52,11 +61,35 @@ from yolo_person_detector.yolo_wrapper import Detection, InferenceResult, YOLOWr
 
 SOURCE_NAME = "person_follower"
 DEFAULT_MODEL_PATH = "yolov8n.pt"
+TTS_SERVICE = "/aimdk_5Fmsgs/srv/PlayTts"
+
+CAMERA_TOPICS = {
+    "left_rgb_image": {
+        "image": "/aima/hal/sensor/stereo_head_front_left/rgb_image",
+        "info": "/aima/hal/sensor/stereo_head_front_left/camera_info",
+        "compressed": False,
+    },
+    "left_rgb_image_compressed": {
+        "image": "/aima/hal/sensor/stereo_head_front_left/rgb_image/compressed",
+        "info": "/aima/hal/sensor/stereo_head_front_left/camera_info",
+        "compressed": True,
+    },
+    "right_rgb_image": {
+        "image": "/aima/hal/sensor/stereo_head_front_right/rgb_image",
+        "info": "/aima/hal/sensor/stereo_head_front_right/camera_info",
+        "compressed": False,
+    },
+    "right_rgb_image_compressed": {
+        "image": "/aima/hal/sensor/stereo_head_front_right/rgb_image/compressed",
+        "info": "/aima/hal/sensor/stereo_head_front_right/camera_info",
+        "compressed": True,
+    },
+}
 
 SENSOR_QOS = QoSProfile(
     reliability=ReliabilityPolicy.BEST_EFFORT,
     history=HistoryPolicy.KEEP_LAST,
-    depth=1,
+    depth=5,
     durability=DurabilityPolicy.VOLATILE,
 )
 
@@ -65,6 +98,13 @@ RELIABLE_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
     depth=10,
     durability=DurabilityPolicy.VOLATILE,
+)
+
+CAMERA_INFO_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
 
 
@@ -85,6 +125,35 @@ WAIST_JOINTS = [
 WAIST_YAW_INDEX = 0
 
 
+@dataclass(frozen=True)
+class ImageFrameInfo:
+    topic: str
+    topic_type: str
+    frame_id: str
+    stamp_sec: float
+    width: int
+    height: int
+    fps: float
+    encoding: str = ""
+    compressed_format: str = ""
+    step: int = 0
+    data_size: int = 0
+
+
+@dataclass(frozen=True)
+class LidarSelection:
+    distance_m: Optional[float]
+    source: str
+    frame_id: str = ""
+    stamp_sec: float = 0.0
+    total_points: int = 0
+    valid_points: int = 0
+    sector_points: int = 0
+    selected_points: int = 0
+    fps: float = 0.0
+    target_angle_rad: float = 0.0
+
+
 @dataclass
 class PersonTarget:
     confidence: float
@@ -98,6 +167,8 @@ class PersonTarget:
     base_bearing_rad: float
     distance_m: Optional[float]
     distance_source: str
+    bearing_source: str
+    lidar_selection: LidarSelection
     inference_time_ms: float
     stamp_monotonic: float
 
@@ -126,16 +197,44 @@ def bool_param(value) -> bool:
     return bool(value)
 
 
+def stamp_to_sec(msg) -> float:
+    return float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
+
+
+def derive_camera_info_topic(image_topic: str) -> str:
+    if image_topic.endswith("/rgb_image/compressed"):
+        return image_topic[: -len("/rgb_image/compressed")] + "/camera_info"
+    if image_topic.endswith("/rgb_image"):
+        return image_topic[: -len("/rgb_image")] + "/camera_info"
+    return ""
+
+
+def point_xyz(point) -> tuple[float, float, float]:
+    try:
+        return float(point["x"]), float(point["y"]), float(point["z"])
+    except Exception:
+        pass
+
+    try:
+        return float(point.x), float(point.y), float(point.z)
+    except Exception:
+        pass
+
+    return float(point[0]), float(point[1]), float(point[2])
+
+
 class X2PersonFollow(Node):
     """Camera plus lidar person detector/follower for the Agibot X2."""
 
     def __init__(self) -> None:
         super().__init__("x2_person_follow")
 
+        self.declare_parameter("camera_topic_type", "left_rgb_image")
+        self.declare_parameter("camera_topic", "")
+        self.declare_parameter("camera_info_topic", "")
         self.declare_parameter(
-            "camera_topic", "/aima/hal/sensor/rgb_head_front_center/rgb_image"
+            "lidar_topic", "/aima/hal/sensor/lidar_chest_front/lidar_pointcloud"
         )
-        self.declare_parameter("lidar_topic", "/scan")
         self.declare_parameter("model_path", DEFAULT_MODEL_PATH)
         self.declare_parameter("confidence_threshold", 0.5)
         self.declare_parameter("nms_threshold", 0.45)
@@ -144,6 +243,12 @@ class X2PersonFollow(Node):
         self.declare_parameter("camera_horizontal_fov_deg", 69.0)
         self.declare_parameter("lidar_window_deg", 8.0)
         self.declare_parameter("lidar_angle_offset_deg", 0.0)
+        self.declare_parameter("lidar_min_range_m", 0.05)
+        self.declare_parameter("lidar_max_range_m", 8.0)
+        self.declare_parameter("tts_enabled", True)
+        self.declare_parameter("tts_text", "Hello")
+        self.declare_parameter("tts_cooldown_sec", 60.0)
+        self.declare_parameter("tts_reset_after_lost_sec", 2.0)
         self.declare_parameter("follow_enabled", False)
         self.declare_parameter("stop_distance_m", 1.2)
         self.declare_parameter("forward_gain", 0.25)
@@ -154,7 +259,7 @@ class X2PersonFollow(Node):
         self.declare_parameter("min_angular_speed", 0.06)
         self.declare_parameter("center_deadzone_deg", 3.0)
         self.declare_parameter("watchdog_timeout_sec", 0.7)
-        self.declare_parameter("control_rate_hz", 20.0)
+        self.declare_parameter("control_rate_hz", 50.0)
         self.declare_parameter("log_every_sec", 1.0)
         self.declare_parameter("track_same_person", True)
         self.declare_parameter("target_max_center_jump_ratio", 0.45)
@@ -164,14 +269,19 @@ class X2PersonFollow(Node):
         self.declare_parameter("waist_yaw_gain", 1.0)
         self.declare_parameter("waist_center_deadzone_deg", 2.0)
         self.declare_parameter("waist_soft_limit_deg", 90.0)
-        self.declare_parameter("waist_max_velocity", 0.7)
-        self.declare_parameter("waist_max_acceleration", 1.0)
-        self.declare_parameter("waist_max_jerk", 25.0)
+        self.declare_parameter("waist_max_velocity", 0.35)
+        self.declare_parameter("waist_max_acceleration", 0.25)
+        self.declare_parameter("waist_max_jerk", 3.0)
         self.declare_parameter("waist_invert_direction", False)
         self.declare_parameter("waist_hold_on_lost", True)
         self.declare_parameter("waist_use_ruckig", True)
 
-        self.camera_topic = self.get_parameter("camera_topic").value
+        self.camera_topic_type = self.get_parameter("camera_topic_type").value
+        self.camera_topic_override = self.get_parameter("camera_topic").value
+        self.camera_info_topic_override = self.get_parameter("camera_info_topic").value
+        self.camera_topic, self.camera_info_topic, self.camera_is_compressed = (
+            self.resolve_camera_topics()
+        )
         self.lidar_topic = self.get_parameter("lidar_topic").value
         model_path = self.get_parameter("model_path").value
         confidence = float(self.get_parameter("confidence_threshold").value)
@@ -186,6 +296,17 @@ class X2PersonFollow(Node):
         )
         self.lidar_angle_offset_rad = math.radians(
             float(self.get_parameter("lidar_angle_offset_deg").value)
+        )
+        self.lidar_min_range_m = float(self.get_parameter("lidar_min_range_m").value)
+        lidar_max_range_m = float(self.get_parameter("lidar_max_range_m").value)
+        self.lidar_max_range_m = (
+            lidar_max_range_m if lidar_max_range_m > 0.0 else float("inf")
+        )
+        self.tts_enabled = bool_param(self.get_parameter("tts_enabled").value)
+        self.tts_text = str(self.get_parameter("tts_text").value)
+        self.tts_cooldown_sec = float(self.get_parameter("tts_cooldown_sec").value)
+        self.tts_reset_after_lost_sec = float(
+            self.get_parameter("tts_reset_after_lost_sec").value
         )
         self.follow_enabled = bool_param(self.get_parameter("follow_enabled").value)
         self.stop_distance_m = float(self.get_parameter("stop_distance_m").value)
@@ -255,6 +376,10 @@ class X2PersonFollow(Node):
                 "cv_bridge is not available. Install ros-humble-cv-bridge on the robot."
             )
         self.bridge = CvBridge()
+        if point_cloud2 is None:
+            raise RuntimeError(
+                "sensor_msgs_py is not available. Install the ROS sensor_msgs_py package."
+            )
 
         self.get_logger().info(f"Loading YOLO model: {model_path} on {device}")
         self.yolo = YOLOWrapper(
@@ -266,46 +391,76 @@ class X2PersonFollow(Node):
         )
         self.get_logger().info("YOLO model loaded")
 
-        self.latest_scan: Optional[LaserScan] = None
+        self.latest_pointcloud: Optional[PointCloud2] = None
+        self.latest_lidar_meta: Optional[LidarSelection] = None
         self.target: Optional[PersonTarget] = None
         self.last_log_time = 0.0
         self.last_no_lidar_warning = 0.0
         self.last_stop_publish = 0.0
         self.last_no_waist_state_warning = 0.0
         self.last_waist_ruckig_warning = 0.0
+        self.last_tts_warning = 0.0
+        self.last_tts_time = -float("inf")
+        self.last_person_seen_time = -float("inf")
+        self.greeted_this_encounter = False
         self.input_source_registered = False
+        self.camera_arrivals = deque()
+        self.lidar_arrivals = deque()
+        self.camera_fx: Optional[float] = None
+        self.camera_cx: Optional[float] = None
+        self.camera_info_width: Optional[int] = None
         self.waist_positions: Optional[list[float]] = None
         self.waist_velocities: Optional[list[float]] = None
         self.waist_command_positions: Optional[list[float]] = None
         self.waist_command_velocities: Optional[list[float]] = None
         self.waist_ruckig = None
 
-        self.image_sub = self.create_subscription(
-            Image,
-            self.camera_topic,
-            self.image_callback,
-            SENSOR_QOS,
-        )
-        self.scan_sub = self.create_subscription(
-            LaserScan,
+        if self.camera_is_compressed:
+            self.image_sub = self.create_subscription(
+                CompressedImage,
+                self.camera_topic,
+                self.compressed_image_callback,
+                SENSOR_QOS,
+            )
+        else:
+            self.image_sub = self.create_subscription(
+                Image,
+                self.camera_topic,
+                self.image_callback,
+                SENSOR_QOS,
+            )
+        self.camera_info_sub = None
+        if self.camera_info_topic:
+            self.camera_info_sub = self.create_subscription(
+                CameraInfo,
+                self.camera_info_topic,
+                self.camera_info_callback,
+                CAMERA_INFO_QOS,
+            )
+        self.lidar_sub = self.create_subscription(
+            PointCloud2,
             self.lidar_topic,
-            self.scan_callback,
+            self.lidar_callback,
             SENSOR_QOS,
         )
 
         self.vel_pub = None
         self.waist_pub = None
         self.input_source_client = None
+        self.tts_client = None
         if AIMDK_AVAILABLE:
-            self.vel_pub = self.create_publisher(
-                McLocomotionVelocity,
-                "/aima/mc/locomotion/velocity",
-                RELIABLE_QOS,
-            )
-            self.input_source_client = self.create_client(
-                SetMcInputSource,
-                "/aimdk_5Fmsgs/srv/SetMcInputSource",
-            )
+            if self.tts_enabled:
+                self.tts_client = self.create_client(PlayTts, TTS_SERVICE)
+            if self.follow_enabled:
+                self.vel_pub = self.create_publisher(
+                    McLocomotionVelocity,
+                    "/aima/mc/locomotion/velocity",
+                    RELIABLE_QOS,
+                )
+                self.input_source_client = self.create_client(
+                    SetMcInputSource,
+                    "/aimdk_5Fmsgs/srv/SetMcInputSource",
+                )
             if self.waist_tracking_enabled:
                 self.waist_pub = self.create_publisher(
                     JointCommandArray,
@@ -337,6 +492,10 @@ class X2PersonFollow(Node):
                 "waist_tracking_enabled=true, but aimdk_msgs is not available. "
                 "Detection logging will run, torso tracking is disabled."
             )
+        if self.tts_enabled and not AIMDK_AVAILABLE:
+            self.get_logger().error(
+                "tts_enabled=true, but aimdk_msgs is not available. Greeting is disabled."
+            )
 
         if self.follow_enabled and AIMDK_AVAILABLE:
             self.input_source_registered = self.register_input_source()
@@ -348,12 +507,52 @@ class X2PersonFollow(Node):
         mode = "follow" if self.follow_enabled else "log-only"
         waist_mode = "waist-track" if self.waist_tracking_enabled else "waist-off"
         self.get_logger().info(
-            f"Started in {mode}/{waist_mode} mode. camera_topic={self.camera_topic}, "
-            f"lidar_topic={self.lidar_topic}, stop_distance={self.stop_distance_m:.2f}m"
+            f"Started in {mode}/{waist_mode} mode. camera_topic_type={self.camera_topic_type}, "
+            f"camera_topic={self.camera_topic}, camera_info={self.camera_info_topic or 'none'}, "
+            f"lidar_topic={self.lidar_topic}, stop_distance={self.stop_distance_m:.2f}m, "
+            f"waist_limits=v{self.waist_max_velocity:.2f}/a{self.waist_max_acceleration:.2f}/j{self.waist_max_jerk:.1f}, "
+            f"waist_hold_on_lost={self.waist_hold_on_lost}"
         )
 
-    def scan_callback(self, msg: LaserScan) -> None:
-        self.latest_scan = msg
+    def resolve_camera_topics(self) -> tuple[str, str, bool]:
+        config = CAMERA_TOPICS.get(self.camera_topic_type)
+        if config is None:
+            self.get_logger().warn(
+                f"Unknown camera_topic_type={self.camera_topic_type!r}; "
+                "falling back to left_rgb_image"
+            )
+            self.camera_topic_type = "left_rgb_image"
+            config = CAMERA_TOPICS[self.camera_topic_type]
+
+        camera_topic = self.camera_topic_override or str(config["image"])
+        camera_info_topic = self.camera_info_topic_override or str(config["info"])
+        is_compressed = bool(config["compressed"])
+
+        if self.camera_topic_override:
+            is_compressed = camera_topic.endswith("/compressed")
+            if not self.camera_info_topic_override:
+                camera_info_topic = derive_camera_info_topic(camera_topic)
+
+        return camera_topic, camera_info_topic, is_compressed
+
+    def update_arrivals(self, arrivals: deque) -> float:
+        now = self.get_clock().now()
+        arrivals.append(now)
+        while arrivals and (now - arrivals[0]).nanoseconds * 1e-9 > 1.0:
+            arrivals.popleft()
+        return float(len(arrivals))
+
+    def lidar_callback(self, msg: PointCloud2) -> None:
+        self.latest_pointcloud = msg
+        fps = self.update_arrivals(self.lidar_arrivals)
+        self.latest_lidar_meta = LidarSelection(
+            distance_m=None,
+            source="pointcloud",
+            frame_id=msg.header.frame_id,
+            stamp_sec=stamp_to_sec(msg),
+            total_points=int(msg.width) * int(msg.height),
+            fps=fps,
+        )
 
     def waist_state_callback(self, msg: JointStateArray) -> None:
         by_name = {
@@ -385,13 +584,68 @@ class X2PersonFollow(Node):
             self.waist_command_positions = list(self.waist_positions)
             self.waist_command_velocities = list(self.waist_velocities)
 
+    def camera_info_callback(self, msg: CameraInfo) -> None:
+        if len(msg.k) < 3 or msg.k[0] <= 0.0:
+            self.get_logger().warn("CameraInfo arrived without a usable K matrix")
+            return
+
+        self.camera_fx = float(msg.k[0])
+        self.camera_cx = float(msg.k[2])
+        self.camera_info_width = int(msg.width)
+        self.get_logger().info(
+            "CameraInfo received: "
+            f"frame_id={msg.header.frame_id}, stamp={stamp_to_sec(msg):.6f}, "
+            f"size={msg.width}x{msg.height}, fx={self.camera_fx:.2f}, "
+            f"cx={self.camera_cx:.2f}"
+        )
+
     def image_callback(self, msg: Image) -> None:
+        fps = self.update_arrivals(self.camera_arrivals)
         try:
             image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         except Exception as exc:
             self.get_logger().warn(f"Image conversion failed: {exc}")
             return
 
+        info = ImageFrameInfo(
+            topic=self.camera_topic,
+            topic_type=self.camera_topic_type,
+            frame_id=msg.header.frame_id,
+            stamp_sec=stamp_to_sec(msg),
+            width=int(msg.width),
+            height=int(msg.height),
+            fps=fps,
+            encoding=msg.encoding,
+            step=int(msg.step),
+            data_size=len(msg.data),
+        )
+        self.process_image(image, info)
+
+    def compressed_image_callback(self, msg: CompressedImage) -> None:
+        fps = self.update_arrivals(self.camera_arrivals)
+        try:
+            image = self.bridge.compressed_imgmsg_to_cv2(
+                msg, desired_encoding="bgr8"
+            )
+        except Exception as exc:
+            self.get_logger().warn(f"Compressed image conversion failed: {exc}")
+            return
+
+        height, width = image.shape[:2]
+        info = ImageFrameInfo(
+            topic=self.camera_topic,
+            topic_type=self.camera_topic_type,
+            frame_id=msg.header.frame_id,
+            stamp_sec=stamp_to_sec(msg),
+            width=int(width),
+            height=int(height),
+            fps=fps,
+            compressed_format=msg.format,
+            data_size=len(msg.data),
+        )
+        self.process_image(image, info)
+
+    def process_image(self, image, image_info: ImageFrameInfo) -> None:
         try:
             result = self.yolo.detect(image)
         except Exception as exc:
@@ -399,16 +653,19 @@ class X2PersonFollow(Node):
             return
 
         self.target = self.select_target(result)
-        self.log_detection(result, self.target)
+        self.update_greeting_state(self.target)
+        self.log_detection(result, self.target, image_info)
 
     def select_target(self, result: InferenceResult) -> Optional[PersonTarget]:
         if not result.detections:
             return None
 
         detection = self.select_detection(result)
-        bearing_rad = self.bearing_from_detection(detection, result.image_width)
+        bearing_rad, bearing_source = self.bearing_from_detection(
+            detection, result.image_width
+        )
         base_bearing_rad = self.base_bearing_from_camera_bearing(bearing_rad)
-        distance_m, distance_source = self.distance_from_lidar(base_bearing_rad)
+        lidar_selection = self.distance_from_lidar(base_bearing_rad)
 
         return PersonTarget(
             confidence=detection.confidence,
@@ -420,8 +677,10 @@ class X2PersonFollow(Node):
             image_height=result.image_height,
             bearing_rad=bearing_rad,
             base_bearing_rad=base_bearing_rad,
-            distance_m=distance_m,
-            distance_source=distance_source,
+            distance_m=lidar_selection.distance_m,
+            distance_source=lidar_selection.source,
+            bearing_source=bearing_source,
+            lidar_selection=lidar_selection,
             inference_time_ms=result.inference_time_ms,
             stamp_monotonic=time.monotonic(),
         )
@@ -455,12 +714,23 @@ class X2PersonFollow(Node):
 
         return max(result.detections, key=lambda det: det.bbox_w * det.bbox_h)
 
-    def bearing_from_detection(self, detection: Detection, image_width: int) -> float:
+    def bearing_from_detection(
+        self, detection: Detection, image_width: int
+    ) -> tuple[float, str]:
         bbox_center_x = detection.bbox_x + detection.bbox_w / 2.0
+        if self.camera_fx is not None and self.camera_cx is not None:
+            fx = self.camera_fx
+            cx = self.camera_cx
+            if self.camera_info_width and self.camera_info_width != image_width:
+                scale = image_width / float(self.camera_info_width)
+                fx *= scale
+                cx *= scale
+            return math.atan2(cx - bbox_center_x, fx), "camera_info"
+
         normalized_left_positive = (image_width / 2.0 - bbox_center_x) / (
             image_width / 2.0
         )
-        return normalized_left_positive * (self.camera_horizontal_fov_rad / 2.0)
+        return normalized_left_positive * (self.camera_horizontal_fov_rad / 2.0), "fov"
 
     def base_bearing_from_camera_bearing(self, bearing_rad: float) -> float:
         if not self.waist_tracking_enabled or self.waist_positions is None:
@@ -470,50 +740,130 @@ class X2PersonFollow(Node):
         camera_yaw_rad = -waist_yaw if self.waist_invert_direction else waist_yaw
         return angular_delta(camera_yaw_rad + bearing_rad, 0.0)
 
-    def distance_from_lidar(self, bearing_rad: float) -> tuple[Optional[float], str]:
-        scan = self.latest_scan
-        if scan is None:
+    def distance_from_lidar(self, bearing_rad: float) -> LidarSelection:
+        cloud = self.latest_pointcloud
+        if cloud is None:
             now = time.monotonic()
             if now - self.last_no_lidar_warning > 5.0:
                 self.last_no_lidar_warning = now
                 self.get_logger().warn(
-                    f"No LaserScan messages yet on {self.lidar_topic}"
+                    f"No PointCloud2 messages yet on {self.lidar_topic}"
                 )
-            return None, "lidar-missing"
+            return LidarSelection(distance_m=None, source="lidar-missing")
 
         target_angle = bearing_rad + self.lidar_angle_offset_rad
-        valid_ranges: list[float] = []
-        range_min = max(float(scan.range_min), 0.02)
-        range_max = float(scan.range_max) if scan.range_max > 0.0 else float("inf")
+        valid_distances: list[float] = []
+        sector_distances: list[float] = []
+        total_points = int(cloud.width) * int(cloud.height)
+        range_min = max(self.lidar_min_range_m, 0.0)
+        range_max = self.lidar_max_range_m
 
-        for index, range_m in enumerate(scan.ranges):
-            if not math.isfinite(range_m):
-                continue
-            if range_m < range_min or range_m > range_max:
-                continue
+        try:
+            points = point_cloud2.read_points(
+                cloud, field_names=("x", "y", "z"), skip_nans=True
+            )
+            for point in points:
+                try:
+                    x, y, _z = point_xyz(point)
+                except Exception:
+                    continue
+                distance_m = math.hypot(x, y)
+                if not math.isfinite(distance_m):
+                    continue
+                if distance_m < range_min or distance_m > range_max:
+                    continue
 
-            sample_angle = scan.angle_min + index * scan.angle_increment
-            if abs(angular_delta(sample_angle, target_angle)) <= self.lidar_window_rad:
-                valid_ranges.append(float(range_m))
+                valid_distances.append(distance_m)
+                sample_angle = math.atan2(y, x)
+                if (
+                    abs(angular_delta(sample_angle, target_angle))
+                    <= self.lidar_window_rad
+                ):
+                    sector_distances.append(distance_m)
+        except Exception as exc:
+            self.get_logger().warn(f"LiDAR point cloud parsing failed: {exc}")
+            return LidarSelection(
+                distance_m=None,
+                source="lidar-parse-error",
+                frame_id=cloud.header.frame_id,
+                stamp_sec=stamp_to_sec(cloud),
+                total_points=total_points,
+                fps=float(len(self.lidar_arrivals)),
+                target_angle_rad=target_angle,
+            )
 
-        if not valid_ranges:
-            return None, "lidar-empty"
+        if not valid_distances:
+            return LidarSelection(
+                distance_m=None,
+                source="lidar-empty",
+                frame_id=cloud.header.frame_id,
+                stamp_sec=stamp_to_sec(cloud),
+                total_points=total_points,
+                valid_points=0,
+                sector_points=0,
+                fps=float(len(self.lidar_arrivals)),
+                target_angle_rad=target_angle,
+            )
 
-        valid_ranges.sort()
-        closest_sample_count = min(5, len(valid_ranges))
-        return statistics.median(valid_ranges[:closest_sample_count]), "lidar"
+        if not sector_distances:
+            return LidarSelection(
+                distance_m=None,
+                source="lidar-sector-empty",
+                frame_id=cloud.header.frame_id,
+                stamp_sec=stamp_to_sec(cloud),
+                total_points=total_points,
+                valid_points=len(valid_distances),
+                sector_points=0,
+                fps=float(len(self.lidar_arrivals)),
+                target_angle_rad=target_angle,
+            )
+
+        sector_distances.sort()
+        closest_sample_count = min(5, len(sector_distances))
+        return LidarSelection(
+            distance_m=statistics.median(sector_distances[:closest_sample_count]),
+            source="lidar",
+            frame_id=cloud.header.frame_id,
+            stamp_sec=stamp_to_sec(cloud),
+            total_points=total_points,
+            valid_points=len(valid_distances),
+            sector_points=len(sector_distances),
+            selected_points=closest_sample_count,
+            fps=float(len(self.lidar_arrivals)),
+            target_angle_rad=target_angle,
+        )
 
     def log_detection(
-        self, result: InferenceResult, target: Optional[PersonTarget]
+        self,
+        result: InferenceResult,
+        target: Optional[PersonTarget],
+        image_info: ImageFrameInfo,
     ) -> None:
         now = time.monotonic()
         if now - self.last_log_time < self.log_every_sec:
             return
         self.last_log_time = now
 
+        if image_info.compressed_format:
+            camera_text = (
+                f"camera={image_info.topic_type} topic={image_info.topic}, "
+                f"frame_id={image_info.frame_id}, stamp={image_info.stamp_sec:.6f}, "
+                f"format={image_info.compressed_format}, size={image_info.width}x{image_info.height}, "
+                f"data={image_info.data_size}B, camera_fps={image_info.fps:.1f}"
+            )
+        else:
+            camera_text = (
+                f"camera={image_info.topic_type} topic={image_info.topic}, "
+                f"frame_id={image_info.frame_id}, stamp={image_info.stamp_sec:.6f}, "
+                f"encoding={image_info.encoding}, size={image_info.width}x{image_info.height}, "
+                f"step={image_info.step}, data={image_info.data_size}B, "
+                f"camera_fps={image_info.fps:.1f}"
+            )
+
         if target is None:
             self.get_logger().info(
-                f"No person detected | inference={result.inference_time_ms:.1f}ms"
+                f"No person detected: persons=0, inference={result.inference_time_ms:.1f}ms | "
+                f"{camera_text} | {self.lidar_log_text(None)}"
             )
             return
 
@@ -524,12 +874,113 @@ class X2PersonFollow(Node):
 
         self.get_logger().info(
             "Person detected: "
-            f"{distance_text}, confidence={target.confidence:.2f}, "
+            f"persons={len(result.detections)}, selected_confidence={target.confidence:.2f}, "
+            f"{distance_text}, "
             f"bearing={math.degrees(target.bearing_rad):+.1f}deg, "
             f"base_bearing={math.degrees(target.base_bearing_rad):+.1f}deg, "
-            f"bbox={target.bbox_w}x{target.bbox_h}, "
-            f"inference={target.inference_time_ms:.1f}ms"
+            f"bearing_source={target.bearing_source}, "
+            f"bbox=({target.bbox_x},{target.bbox_y},{target.bbox_w},{target.bbox_h}), "
+            f"inference={target.inference_time_ms:.1f}ms | "
+            f"{camera_text} | {self.lidar_log_text(target.lidar_selection)}"
         )
+
+    def lidar_log_text(self, selection: Optional[LidarSelection]) -> str:
+        lidar = selection or self.latest_lidar_meta
+        if lidar is None:
+            return "lidar=missing"
+
+        parts = [
+            f"lidar_frame={lidar.frame_id or 'unknown'}",
+            f"lidar_stamp={lidar.stamp_sec:.6f}",
+            f"lidar_fps={lidar.fps:.1f}",
+            f"total_points={lidar.total_points}",
+        ]
+        if selection is not None:
+            parts.extend(
+                [
+                    f"valid_points={selection.valid_points}",
+                    f"sector_points={selection.sector_points}",
+                    f"selected_points={selection.selected_points}",
+                    f"target_angle={math.degrees(selection.target_angle_rad):+.1f}deg",
+                ]
+            )
+        return ", ".join(parts)
+
+    def update_greeting_state(self, target: Optional[PersonTarget]) -> None:
+        now = time.monotonic()
+        if target is None:
+            if (
+                self.greeted_this_encounter
+                and now - self.last_person_seen_time >= self.tts_reset_after_lost_sec
+            ):
+                self.greeted_this_encounter = False
+            return
+
+        self.last_person_seen_time = now
+        if not self.tts_enabled:
+            return
+        if self.greeted_this_encounter:
+            return
+        if (
+            self.tts_cooldown_sec > 0.0
+            and now - self.last_tts_time < self.tts_cooldown_sec
+        ):
+            return
+
+        if self.say_hello_async():
+            self.greeted_this_encounter = True
+            self.last_tts_time = now
+
+    def say_hello_async(self) -> bool:
+        if self.tts_client is None:
+            self.log_tts_warning("TTS client is unavailable")
+            return False
+
+        if not self.tts_client.service_is_ready():
+            if not self.tts_client.wait_for_service(timeout_sec=0.0):
+                self.log_tts_warning(f"TTS service unavailable: {TTS_SERVICE}")
+                return False
+
+        request = PlayTts.Request()
+        request.tts_req.text = self.tts_text
+        request.tts_req.domain = SOURCE_NAME
+        request.tts_req.trace_id = f"person_greeting_{int(time.monotonic() * 1000)}"
+        request.tts_req.is_interrupted = True
+        request.tts_req.priority_weight = 0
+        request.tts_req.priority_level.value = 6
+        try:
+            request.header.header.stamp = self.get_clock().now().to_msg()
+        except Exception:
+            pass
+
+        self.get_logger().info(f"Sending TTS greeting: {self.tts_text!r}")
+        future = self.tts_client.call_async(request)
+        future.add_done_callback(self.tts_done_callback)
+        return True
+
+    def tts_done_callback(self, future) -> None:
+        try:
+            response = future.result()
+        except Exception as exc:
+            self.get_logger().warn(f"TTS greeting failed: {exc}")
+            return
+
+        if response is not None and response.tts_resp.is_success:
+            self.get_logger().info("TTS greeting accepted.")
+        elif response is not None:
+            error_message = getattr(response.tts_resp, "error_message", "")
+            self.get_logger().warn(
+                f"TTS greeting rejected: {error_message or 'unknown error'}"
+            )
+        else:
+            self.get_logger().warn("TTS greeting returned no response.")
+
+    def log_tts_warning(self, message: str) -> None:
+        now = time.monotonic()
+        if now - self.last_tts_warning < 5.0:
+            return
+        self.last_tts_warning = now
+        self.get_logger().warn(message)
 
     def control_loop(self) -> None:
         target = self.fresh_target()
