@@ -240,4 +240,4 @@ scp ~/.cache/ultralytics/yolov8n.pt agi@10.0.1.40:~/ros2_ws/src/robohack2026/yol
 ```
 
 **Camera topic silent**
-Check the sensor is running: `ros2 topic hz /aima/hal/sensor/rgbd_head_front/rgb_image`. If empty, the HAL sensor service isn't started on the robot.
+Check the sensor is running: `ros2 topic hz /aima/hal/sensor/rgbd_head_front_center/rgb_image`. If empty, the HAL sensor service isn't started on the robot.
