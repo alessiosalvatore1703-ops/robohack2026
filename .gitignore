@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ROS2 build artifacts
+build/
+install/
+log/
+
+# YOLO model weights (downloaded at runtime)
+*.pt
+
+# Debug output
+output.mp4
+*.avi
+
+# OS
+.DS_Store
