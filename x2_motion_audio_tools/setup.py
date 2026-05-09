@@ -13,6 +13,7 @@ setup(
             "share/" + package_name + "/launch",
             [
                 "launch/x2_person_follow.launch.py",
+                "launch/x2_person_follow_debug.rviz",
                 "launch/x2_person_track_torso.launch.py",
             ],
         ),

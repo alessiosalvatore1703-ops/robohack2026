@@ -11,6 +11,7 @@ same as the torso tracker.
 from __future__ import annotations
 
 import math
+import json
 import signal
 import statistics
 import sys
@@ -27,7 +28,10 @@ if str(SCRIPT_DIR) not in sys.path:
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from geometry_msgs.msg import Point
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image, PointCloud2
+from std_msgs.msg import String
+from visualization_msgs.msg import Marker, MarkerArray
 
 try:
     from sensor_msgs_py import point_cloud2
@@ -38,6 +42,11 @@ try:
     import ruckig
 except ImportError:
     ruckig = None
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 
 try:
     from aimdk_msgs.msg import (
@@ -164,6 +173,14 @@ class PersonTarget:
     stamp_monotonic: float
 
 
+@dataclass(frozen=True)
+class MotionCommand:
+    forward_velocity: float
+    angular_velocity: float
+    reason: str
+    forward_source: str = "none"
+
+
 def clamp(value: float, low: float, high: float) -> float:
     return min(max(value, low), high)
 
@@ -240,6 +257,14 @@ class X2PersonFollow(Node):
         self.declare_parameter("watchdog_timeout_sec", 0.8)
         self.declare_parameter("control_rate_hz", 50.0)
         self.declare_parameter("log_every_sec", 1.0)
+        self.declare_parameter("input_source_retry_sec", 2.0)
+        self.declare_parameter("visual_fallback_enabled", True)
+        self.declare_parameter("visual_target_bbox_height_ratio", 0.55)
+        self.declare_parameter("visual_fallback_max_forward_speed", 0.12)
+        self.declare_parameter("visual_stop_deadband_ratio", 0.04)
+        self.declare_parameter("publish_debug_image", True)
+        self.declare_parameter("publish_debug_markers", True)
+        self.declare_parameter("publish_status", True)
         self.declare_parameter("track_same_person", True)
         self.declare_parameter("target_max_center_jump_ratio", 0.45)
         self.declare_parameter("waist_tracking_enabled", False)
@@ -304,6 +329,30 @@ class X2PersonFollow(Node):
             self.get_parameter("watchdog_timeout_sec").value
         )
         self.log_every_sec = float(self.get_parameter("log_every_sec").value)
+        self.input_source_retry_sec = float(
+            self.get_parameter("input_source_retry_sec").value
+        )
+        self.visual_fallback_enabled = bool_param(
+            self.get_parameter("visual_fallback_enabled").value
+        )
+        self.visual_target_bbox_height_ratio = float(
+            self.get_parameter("visual_target_bbox_height_ratio").value
+        )
+        self.visual_fallback_max_forward_speed = float(
+            self.get_parameter("visual_fallback_max_forward_speed").value
+        )
+        self.visual_stop_deadband_ratio = float(
+            self.get_parameter("visual_stop_deadband_ratio").value
+        )
+        self.publish_debug_image_enabled = bool_param(
+            self.get_parameter("publish_debug_image").value
+        )
+        self.publish_debug_markers_enabled = bool_param(
+            self.get_parameter("publish_debug_markers").value
+        )
+        self.publish_status_enabled = bool_param(
+            self.get_parameter("publish_status").value
+        )
         self.track_same_person = bool_param(
             self.get_parameter("track_same_person").value
         )
@@ -351,6 +400,18 @@ class X2PersonFollow(Node):
             self.waist_yaw_upper_limit = yaw_joint.upper_limit
         control_rate_hz = float(self.get_parameter("control_rate_hz").value)
         self.control_period_sec = 1.0 / control_rate_hz
+        self.visual_target_bbox_height_ratio = clamp(
+            self.visual_target_bbox_height_ratio, 0.05, 0.95
+        )
+        self.visual_stop_deadband_ratio = max(0.0, self.visual_stop_deadband_ratio)
+        self.visual_fallback_max_forward_speed = max(
+            0.0, self.visual_fallback_max_forward_speed
+        )
+        if self.publish_debug_image_enabled and cv2 is None:
+            self.publish_debug_image_enabled = False
+            self.get_logger().warn(
+                "opencv-python is not available; debug image publishing is disabled."
+            )
 
         if point_cloud2 is None:
             raise RuntimeError(
@@ -381,6 +442,11 @@ class X2PersonFollow(Node):
         self.last_log_time = 0.0
         self.last_no_lidar_warning = 0.0
         self.last_stop_publish = 0.0
+        self.last_status_publish = 0.0
+        self.last_input_source_attempt = -float("inf")
+        self.input_source_future = None
+        self.input_source_future_start = 0.0
+        self.input_source_attempt_count = 0
         self.last_no_waist_state_warning = 0.0
         self.last_waist_ruckig_warning = 0.0
         self.last_tts_warning = 0.0
@@ -388,6 +454,7 @@ class X2PersonFollow(Node):
         self.last_person_seen_time = -float("inf")
         self.greeted_this_encounter = False
         self.input_source_registered = False
+        self.last_motion_command = MotionCommand(0.0, 0.0, "startup")
         self.camera_arrivals = deque()
         self.lidar_arrivals = deque()
         self.camera_fx: Optional[float] = None
@@ -417,6 +484,21 @@ class X2PersonFollow(Node):
             self.lidar_callback,
             SENSOR_QOS,
         )
+        self.debug_image_pub = None
+        self.debug_marker_pub = None
+        self.status_pub = None
+        if self.publish_debug_image_enabled:
+            self.debug_image_pub = self.create_publisher(
+                Image, "/x2/person_follow/debug_image", SENSOR_QOS
+            )
+        if self.publish_debug_markers_enabled:
+            self.debug_marker_pub = self.create_publisher(
+                MarkerArray, "/x2/person_follow/debug_markers", RELIABLE_QOS
+            )
+        if self.publish_status_enabled:
+            self.status_pub = self.create_publisher(
+                String, "/x2/person_follow/status", RELIABLE_QOS
+            )
 
         self.vel_pub = None
         self.waist_pub = None
@@ -472,7 +554,7 @@ class X2PersonFollow(Node):
             )
 
         if self.follow_enabled and AIMDK_AVAILABLE:
-            self.input_source_registered = self.register_input_source()
+            self.maybe_start_input_source_registration(force=True)
 
         self.control_timer = self.create_timer(
             1.0 / control_rate_hz, self.control_loop
@@ -485,7 +567,8 @@ class X2PersonFollow(Node):
             f"camera_topic={self.camera_topic}, camera_info={self.camera_info_topic or 'none'}, "
             f"lidar_topic={self.lidar_topic}, stop_distance={self.stop_distance_m:.2f}m, "
             f"stop_deadband={self.stop_deadband_m:.2f}m, "
-            f"max_forward_bearing={math.degrees(self.max_forward_bearing_rad):.1f}deg"
+            f"max_forward_bearing={math.degrees(self.max_forward_bearing_rad):.1f}deg, "
+            f"visual_fallback={self.visual_fallback_enabled}"
         )
 
     def update_arrivals(self, arrivals: deque) -> float:
@@ -606,6 +689,7 @@ class X2PersonFollow(Node):
         self.target = self.select_target(result)
         self.update_greeting_state(self.target)
         self.log_detection(result, self.target, image_info)
+        self.publish_debug_outputs(image, result, self.target, image_info)
 
     def select_target(self, result: InferenceResult) -> Optional[PersonTarget]:
         if not result.detections:
@@ -814,7 +898,7 @@ class X2PersonFollow(Node):
         if target is None:
             self.get_logger().info(
                 f"No person detected: persons=0, inference={result.inference_time_ms:.1f}ms | "
-                f"{camera_text} | {self.lidar_log_text(None)}"
+                f"{camera_text} | {self.lidar_log_text(None)} | {self.motion_log_text()}"
             )
             return
 
@@ -832,7 +916,8 @@ class X2PersonFollow(Node):
             f"bearing_source={target.bearing_source}, "
             f"bbox=({target.bbox_x},{target.bbox_y},{target.bbox_w},{target.bbox_h}), "
             f"inference={target.inference_time_ms:.1f}ms | "
-            f"{camera_text} | {self.lidar_log_text(target.lidar_selection)}"
+            f"{camera_text} | {self.lidar_log_text(target.lidar_selection)} | "
+            f"{self.motion_log_text()}"
         )
 
     def lidar_log_text(self, selection: Optional[LidarSelection]) -> str:
@@ -856,6 +941,315 @@ class X2PersonFollow(Node):
                 ]
             )
         return ", ".join(parts)
+
+    def motion_log_text(self) -> str:
+        command = self.last_motion_command
+        return (
+            f"motion_reason={command.reason}, "
+            f"cmd_forward={command.forward_velocity:+.2f}m/s, "
+            f"cmd_angular={command.angular_velocity:+.2f}rad/s, "
+            f"forward_source={command.forward_source}"
+        )
+
+    def publish_debug_outputs(
+        self,
+        image,
+        result: InferenceResult,
+        target: Optional[PersonTarget],
+        image_info: ImageFrameInfo,
+    ) -> None:
+        if self.debug_image_pub is not None:
+            self.publish_debug_image(image, result, target, image_info)
+        if self.debug_marker_pub is not None:
+            self.publish_debug_markers(target)
+
+    def publish_debug_image(
+        self,
+        image,
+        result: InferenceResult,
+        target: Optional[PersonTarget],
+        image_info: ImageFrameInfo,
+    ) -> None:
+        if cv2 is None:
+            return
+
+        debug = image.copy()
+        height, width = debug.shape[:2]
+        center_x = width // 2
+        deadzone_px = int(self.deadzone_pixel_width(width))
+
+        cv2.line(debug, (center_x, 0), (center_x, height), (255, 255, 255), 1)
+        cv2.line(
+            debug,
+            (max(0, center_x - deadzone_px), 0),
+            (max(0, center_x - deadzone_px), height),
+            (160, 160, 160),
+            1,
+        )
+        cv2.line(
+            debug,
+            (min(width - 1, center_x + deadzone_px), 0),
+            (min(width - 1, center_x + deadzone_px), height),
+            (160, 160, 160),
+            1,
+        )
+
+        for detection in result.detections:
+            selected = self.detection_matches_target(detection, target)
+            color = (0, 255, 255) if selected else (0, 220, 0)
+            thickness = 3 if selected else 2
+            x1 = detection.bbox_x
+            y1 = detection.bbox_y
+            x2 = detection.bbox_x + detection.bbox_w
+            y2 = detection.bbox_y + detection.bbox_h
+            cv2.rectangle(debug, (x1, y1), (x2, y2), color, thickness)
+            label = f"{'TRACK' if selected else 'person'} {detection.confidence:.2f}"
+            cv2.putText(
+                debug,
+                label,
+                (x1, max(16, y1 - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
+
+        for index, line in enumerate(
+            self.debug_overlay_lines(result, target, image_info)
+        ):
+            cv2.putText(
+                debug,
+                line,
+                (10, 24 + index * 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.58,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+        try:
+            msg = self.bridge_cv2_to_image_msg(debug, image_info.frame_id)
+            self.debug_image_pub.publish(msg)
+        except Exception as exc:
+            self.get_logger().warn(f"Debug image publish failed: {exc}")
+
+    def bridge_cv2_to_image_msg(self, image, frame_id: str) -> Image:
+        msg = Image()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = frame_id
+        msg.height = int(image.shape[0])
+        msg.width = int(image.shape[1])
+        msg.encoding = "bgr8"
+        msg.is_bigendian = False
+        msg.step = int(image.shape[1] * image.shape[2])
+        msg.data = image.tobytes()
+        return msg
+
+    def debug_overlay_lines(
+        self,
+        result: InferenceResult,
+        target: Optional[PersonTarget],
+        image_info: ImageFrameInfo,
+    ) -> list[str]:
+        command = self.last_motion_command
+        lines = [
+            f"persons={len(result.detections)} inference={result.inference_time_ms:.1f}ms camera_fps={image_info.fps:.1f}",
+            f"vel fwd={command.forward_velocity:+.2f}m/s yaw={command.angular_velocity:+.2f}rad/s reason={command.reason}",
+        ]
+        if target is None:
+            lines.append("selected=none")
+            return lines
+
+        if target.distance_m is None:
+            distance_text = f"distance=unavailable ({target.distance_source})"
+        else:
+            distance_text = f"distance={target.distance_m:.2f}m ({target.distance_source})"
+        lines.append(
+            f"selected conf={target.confidence:.2f} {distance_text} bearing={math.degrees(target.base_bearing_rad):+.1f}deg"
+        )
+        lines.append(
+            f"bbox=({target.bbox_x},{target.bbox_y},{target.bbox_w},{target.bbox_h}) forward_source={command.forward_source}"
+        )
+        return lines
+
+    def detection_matches_target(
+        self, detection: Detection, target: Optional[PersonTarget]
+    ) -> bool:
+        if target is None:
+            return False
+        return (
+            detection.bbox_x == target.bbox_x
+            and detection.bbox_y == target.bbox_y
+            and detection.bbox_w == target.bbox_w
+            and detection.bbox_h == target.bbox_h
+        )
+
+    def deadzone_pixel_width(self, image_width: int) -> float:
+        if self.camera_fx is not None:
+            fx = self.camera_fx
+            if self.camera_info_width and self.camera_info_width != image_width:
+                fx *= image_width / float(self.camera_info_width)
+            return abs(math.tan(self.center_deadzone_rad) * fx)
+        return (
+            abs(self.center_deadzone_rad)
+            / max(self.camera_horizontal_fov_rad / 2.0, 1e-6)
+            * (image_width / 2.0)
+        )
+
+    def publish_debug_markers(self, target: Optional[PersonTarget]) -> None:
+        marker_array = MarkerArray()
+        delete_marker = Marker()
+        delete_marker.action = Marker.DELETEALL
+        marker_array.markers.append(delete_marker)
+
+        frame_id = self.debug_marker_frame_id(target)
+        delete_marker.header.stamp = self.get_clock().now().to_msg()
+        delete_marker.header.frame_id = frame_id
+        if target is None:
+            marker_array.markers.append(
+                self.make_text_marker(frame_id, 10, "No fresh person target", 0.7, 0.0)
+            )
+            self.debug_marker_pub.publish(marker_array)
+            return
+
+        target_angle = target.base_bearing_rad + self.lidar_angle_offset_rad
+        ray_distance = target.distance_m
+        if ray_distance is None:
+            ray_distance = 2.0
+            if math.isfinite(self.lidar_max_range_m):
+                ray_distance = min(
+                    max(self.lidar_min_range_m, 0.5), self.lidar_max_range_m
+                )
+
+        marker_array.markers.append(
+            self.make_line_marker(
+                frame_id,
+                1,
+                "target_ray",
+                [
+                    (0.0, 0.0, 0.08),
+                    self.point_from_polar(ray_distance, target_angle, 0.08),
+                ],
+                (1.0, 1.0, 0.0, 0.95),
+                0.035,
+            )
+        )
+        left_angle = target_angle + self.lidar_window_rad
+        right_angle = target_angle - self.lidar_window_rad
+        marker_array.markers.append(
+            self.make_line_marker(
+                frame_id,
+                2,
+                "lidar_sector",
+                [
+                    (0.0, 0.0, 0.04),
+                    self.point_from_polar(ray_distance, left_angle, 0.04),
+                    (0.0, 0.0, 0.04),
+                    self.point_from_polar(ray_distance, right_angle, 0.04),
+                ],
+                (0.2, 0.7, 1.0, 0.9),
+                0.02,
+                marker_type=Marker.LINE_LIST,
+            )
+        )
+        if target.distance_m is not None:
+            marker_array.markers.append(
+                self.make_target_point_marker(frame_id, 3, target.distance_m, target_angle)
+            )
+
+        status = (
+            f"{self.last_motion_command.reason} "
+            f"fwd={self.last_motion_command.forward_velocity:+.2f} "
+            f"yaw={self.last_motion_command.angular_velocity:+.2f}"
+        )
+        label_distance = target.distance_m if target.distance_m is not None else ray_distance
+        label_x, label_y, _ = self.point_from_polar(label_distance, target_angle, 0.45)
+        marker_array.markers.append(
+            self.make_text_marker(frame_id, 4, status, label_x, label_y)
+        )
+
+        self.debug_marker_pub.publish(marker_array)
+
+    def debug_marker_frame_id(self, target: Optional[PersonTarget]) -> str:
+        if target is not None and target.lidar_selection.frame_id:
+            return target.lidar_selection.frame_id
+        if self.latest_lidar_meta is not None and self.latest_lidar_meta.frame_id:
+            return self.latest_lidar_meta.frame_id
+        return "lidar_chest_front"
+
+    def point_from_polar(
+        self, distance_m: float, angle_rad: float, z: float
+    ) -> tuple[float, float, float]:
+        return (
+            distance_m * math.cos(angle_rad),
+            distance_m * math.sin(angle_rad),
+            z,
+        )
+
+    def make_line_marker(
+        self,
+        frame_id: str,
+        marker_id: int,
+        namespace: str,
+        points: list[tuple[float, float, float]],
+        color: tuple[float, float, float, float],
+        width: float,
+        marker_type: int = Marker.LINE_STRIP,
+    ) -> Marker:
+        marker = self.base_marker(frame_id, marker_id, namespace, marker_type)
+        marker.scale.x = width
+        self.set_marker_color(marker, color)
+        marker.points = [Point(x=x, y=y, z=z) for x, y, z in points]
+        return marker
+
+    def make_target_point_marker(
+        self, frame_id: str, marker_id: int, distance_m: float, angle_rad: float
+    ) -> Marker:
+        marker = self.base_marker(frame_id, marker_id, "target_point", Marker.SPHERE)
+        marker.pose.position.x = distance_m * math.cos(angle_rad)
+        marker.pose.position.y = distance_m * math.sin(angle_rad)
+        marker.pose.position.z = 0.1
+        marker.scale.x = 0.16
+        marker.scale.y = 0.16
+        marker.scale.z = 0.16
+        self.set_marker_color(marker, (0.0, 1.0, 0.2, 0.95))
+        return marker
+
+    def make_text_marker(
+        self, frame_id: str, marker_id: int, text: str, x: float, y: float
+    ) -> Marker:
+        marker = self.base_marker(frame_id, marker_id, "status", Marker.TEXT_VIEW_FACING)
+        marker.pose.position.x = x
+        marker.pose.position.y = y
+        marker.pose.position.z = 0.45
+        marker.scale.z = 0.16
+        marker.text = text
+        self.set_marker_color(marker, (1.0, 1.0, 1.0, 0.95))
+        return marker
+
+    def base_marker(
+        self, frame_id: str, marker_id: int, namespace: str, marker_type: int
+    ) -> Marker:
+        marker = Marker()
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.header.frame_id = frame_id
+        marker.ns = namespace
+        marker.id = marker_id
+        marker.type = marker_type
+        marker.action = Marker.ADD
+        marker.pose.orientation.w = 1.0
+        marker.lifetime.sec = 1
+        return marker
+
+    def set_marker_color(
+        self, marker: Marker, color: tuple[float, float, float, float]
+    ) -> None:
+        marker.color.r = float(color[0])
+        marker.color.g = float(color[1])
+        marker.color.b = float(color[2])
+        marker.color.a = float(color[3])
 
     def update_greeting_state(self, target: Optional[PersonTarget]) -> None:
         now = time.monotonic()
@@ -937,21 +1331,31 @@ class X2PersonFollow(Node):
         target = self.fresh_target()
         self.control_waist(target)
 
-        if not self.follow_enabled or not AIMDK_AVAILABLE:
-            self.publish_stop_throttled()
+        if not self.follow_enabled:
+            self.publish_stop_throttled("follow_disabled")
             return
 
+        if not AIMDK_AVAILABLE:
+            self.publish_stop_throttled("aimdk_missing")
+            return
+
+        self.finish_input_source_registration()
         if not self.input_source_registered:
-            self.publish_stop_throttled()
+            self.maybe_start_input_source_registration()
+            self.publish_stop_throttled("input_source_not_registered")
             return
 
         if target is None:
-            self.publish_stop_throttled()
+            self.publish_stop_throttled("no_fresh_target")
             return
 
-        angular_velocity = self.angular_velocity_for_target(target)
-        forward_velocity = self.forward_velocity_for_target(target)
-        self.publish_velocity(forward_velocity, angular_velocity)
+        command = self.motion_command_for_target(target)
+        self.publish_velocity(
+            command.forward_velocity,
+            command.angular_velocity,
+            command.reason,
+            command.forward_source,
+        )
 
     def fresh_target(self) -> Optional[PersonTarget]:
         target = self.target
@@ -1123,27 +1527,142 @@ class X2PersonFollow(Node):
             angular_velocity, self.min_angular_speed, self.max_angular_speed
         )
 
-    def forward_velocity_for_target(self, target: PersonTarget) -> float:
+    def motion_command_for_target(self, target: PersonTarget) -> MotionCommand:
+        angular_velocity = self.angular_velocity_for_target(target)
+        forward_velocity, forward_source, forward_reason = (
+            self.forward_velocity_for_target(target)
+        )
+
+        if abs(forward_velocity) > 0.0 or abs(angular_velocity) > 0.0:
+            if forward_reason == "target_too_far_off_center" and angular_velocity:
+                reason = "turning_only_target_off_center"
+            elif forward_source == "visual_fallback":
+                reason = "command_active_visual_fallback"
+            elif forward_source == "lidar":
+                reason = "command_active_lidar"
+            else:
+                reason = "command_active"
+        else:
+            reason = forward_reason
+
+        return MotionCommand(
+            forward_velocity=forward_velocity,
+            angular_velocity=angular_velocity,
+            reason=reason,
+            forward_source=forward_source,
+        )
+
+    def forward_velocity_for_target(
+        self, target: PersonTarget
+    ) -> tuple[float, str, str]:
         if target.distance_m is None:
-            return 0.0
+            return self.visual_fallback_velocity_for_target(target)
 
         if abs(target.base_bearing_rad) > self.max_forward_bearing_rad:
-            return 0.0
+            return 0.0, "lidar", "target_too_far_off_center"
 
         distance_error = target.distance_m - self.stop_distance_m
         if distance_error <= self.stop_deadband_m:
-            return 0.0
+            return 0.0, "lidar", "at_stop_distance"
 
         forward_velocity = self.forward_gain * distance_error
         forward_velocity = min(forward_velocity, self.max_forward_speed)
         if 0.0 < forward_velocity < self.min_forward_speed:
-            return self.min_forward_speed
-        return forward_velocity
+            forward_velocity = self.min_forward_speed
+        return forward_velocity, "lidar", "command_active_lidar"
+
+    def visual_fallback_velocity_for_target(
+        self, target: PersonTarget
+    ) -> tuple[float, str, str]:
+        if not self.visual_fallback_enabled:
+            return 0.0, "none", target.distance_source
+
+        if abs(target.base_bearing_rad) > self.max_forward_bearing_rad:
+            return 0.0, "visual_fallback", "target_too_far_off_center"
+
+        target_height_px = self.visual_target_bbox_height_ratio * target.image_height
+        height_error_px = target_height_px - target.bbox_h
+        deadband_px = self.visual_stop_deadband_ratio * target.image_height
+        if height_error_px <= deadband_px:
+            return 0.0, "visual_fallback", "visual_at_target_size"
+
+        normalized_error = height_error_px / max(target_height_px, 1.0)
+        forward_velocity = self.forward_gain * normalized_error
+        forward_velocity = min(
+            forward_velocity, self.visual_fallback_max_forward_speed
+        )
+        if 0.0 < forward_velocity < self.min_forward_speed:
+            forward_velocity = min(
+                self.min_forward_speed, self.visual_fallback_max_forward_speed
+            )
+        return forward_velocity, "visual_fallback", "command_active_visual_fallback"
 
     def deadband_clamp(self, value: float, min_abs: float, max_abs: float) -> float:
         if abs(value) < min_abs:
             return 0.0
         return clamp(value, -max_abs, max_abs)
+
+    def make_input_source_request(self) -> SetMcInputSource.Request:
+        req = SetMcInputSource.Request()
+        req.action.value = 1001
+        req.input_source.name = SOURCE_NAME
+        req.input_source.priority = 40
+        req.input_source.timeout = 1000
+        req.request.header.stamp = self.get_clock().now().to_msg()
+        return req
+
+    def maybe_start_input_source_registration(self, force: bool = False) -> None:
+        if self.input_source_client is None or self.input_source_registered:
+            return
+        if self.input_source_future is not None:
+            return
+
+        now = time.monotonic()
+        if not force and now - self.last_input_source_attempt < self.input_source_retry_sec:
+            return
+
+        self.last_input_source_attempt = now
+        if not self.input_source_client.wait_for_service(timeout_sec=0.0):
+            self.get_logger().warn(
+                "Locomotion input source service is not available yet; "
+                "will retry."
+            )
+            return
+
+        self.input_source_attempt_count += 1
+        self.get_logger().info(
+            "Registering locomotion input source "
+            f"(attempt {self.input_source_attempt_count})..."
+        )
+        self.input_source_future = self.input_source_client.call_async(
+            self.make_input_source_request()
+        )
+        self.input_source_future_start = now
+
+    def finish_input_source_registration(self) -> None:
+        future = self.input_source_future
+        if future is None:
+            return
+        if not future.done():
+            timeout_sec = max(1.0, self.input_source_retry_sec)
+            if time.monotonic() - self.input_source_future_start > timeout_sec:
+                self.get_logger().warn(
+                    "Input source registration timed out; will retry."
+                )
+                self.input_source_future = None
+            return
+
+        self.input_source_future = None
+        try:
+            resp = future.result()
+            state = resp.response.state.value
+            self.input_source_registered = True
+            self.get_logger().info(
+                f"Input source registered: state={state}, task_id={resp.response.task_id}"
+            )
+        except Exception as exc:
+            self.input_source_registered = False
+            self.get_logger().error(f"Input source registration exception: {exc}")
 
     def register_input_source(self) -> bool:
         if self.input_source_client is None:
@@ -1160,11 +1679,7 @@ class X2PersonFollow(Node):
                 return False
             self.get_logger().info("Waiting for locomotion input source service...")
 
-        req = SetMcInputSource.Request()
-        req.action.value = 1001
-        req.input_source.name = SOURCE_NAME
-        req.input_source.priority = 40
-        req.input_source.timeout = 1000
+        req = self.make_input_source_request()
 
         future = None
         for attempt in range(8):
@@ -1184,6 +1699,7 @@ class X2PersonFollow(Node):
         try:
             resp = future.result()
             state = resp.response.state.value
+            self.input_source_registered = True
             self.get_logger().info(
                 f"Input source registered: state={state}, task_id={resp.response.task_id}"
             )
@@ -1193,8 +1709,17 @@ class X2PersonFollow(Node):
             return False
 
     def publish_velocity(
-        self, forward_velocity: float, angular_velocity: float
+        self,
+        forward_velocity: float,
+        angular_velocity: float,
+        reason: str = "command_active",
+        forward_source: str = "none",
     ) -> None:
+        command = MotionCommand(
+            float(forward_velocity), float(angular_velocity), reason, forward_source
+        )
+        self.record_motion_command(command)
+
         if self.vel_pub is None:
             return
 
@@ -1202,20 +1727,69 @@ class X2PersonFollow(Node):
         msg.header = MessageHeader()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.source = SOURCE_NAME
-        msg.forward_velocity = float(forward_velocity)
+        msg.forward_velocity = command.forward_velocity
         msg.lateral_velocity = 0.0
-        msg.angular_velocity = float(angular_velocity)
+        msg.angular_velocity = command.angular_velocity
         self.vel_pub.publish(msg)
 
-    def publish_stop_throttled(self) -> None:
+    def record_motion_command(self, command: MotionCommand) -> None:
+        self.last_motion_command = command
+        self.publish_status_throttled()
+
+    def publish_status_throttled(self) -> None:
+        if self.status_pub is None:
+            return
+
+        now = time.monotonic()
+        if now - self.last_status_publish < 0.2:
+            return
+        self.last_status_publish = now
+
+        target = self.fresh_target()
+        command = self.last_motion_command
+        payload = {
+            "follow_enabled": self.follow_enabled,
+            "aimdk_available": AIMDK_AVAILABLE,
+            "input_source_registered": self.input_source_registered,
+            "motion_reason": command.reason,
+            "forward_velocity": command.forward_velocity,
+            "angular_velocity": command.angular_velocity,
+            "forward_source": command.forward_source,
+            "target_present": target is not None,
+        }
+        if target is not None:
+            payload.update(
+                {
+                    "confidence": target.confidence,
+                    "distance_m": target.distance_m,
+                    "distance_source": target.distance_source,
+                    "bearing_deg": math.degrees(target.bearing_rad),
+                    "base_bearing_deg": math.degrees(target.base_bearing_rad),
+                    "bbox": [
+                        target.bbox_x,
+                        target.bbox_y,
+                        target.bbox_w,
+                        target.bbox_h,
+                    ],
+                    "lidar_sector_points": target.lidar_selection.sector_points,
+                    "lidar_selected_points": target.lidar_selection.selected_points,
+                }
+            )
+
+        msg = String()
+        msg.data = json.dumps(payload, sort_keys=True)
+        self.status_pub.publish(msg)
+
+    def publish_stop_throttled(self, reason: str = "stopped") -> None:
+        self.record_motion_command(MotionCommand(0.0, 0.0, reason))
         now = time.monotonic()
         if now - self.last_stop_publish < 0.05:
             return
         self.last_stop_publish = now
-        self.publish_velocity(0.0, 0.0)
+        self.publish_velocity(0.0, 0.0, reason)
 
     def stop(self) -> None:
-        self.publish_velocity(0.0, 0.0)
+        self.publish_velocity(0.0, 0.0, "shutdown")
         if self.waist_tracking_enabled:
             self.publish_waist_hold()
 

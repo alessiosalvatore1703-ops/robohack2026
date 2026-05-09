@@ -29,7 +29,7 @@ dependencies:
 
 ```bash
 python3 -m pip install -r src/x2_motion_audio_tools/requirements-person.txt
-sudo apt install ros-humble-sensor-msgs-py
+sudo apt install ros-humble-sensor-msgs-py ros-humble-visualization-msgs
 ```
 
 The person nodes convert the forced raw stereo `Image` messages directly and do
@@ -136,7 +136,9 @@ left front stereo camera, says "Hello" once per visible encounter, reads the
 chest `PointCloud2` LiDAR, logs camera/YOLO/LiDAR details, registers a
 locomotion input source, turns with the legs, walks toward the selected person,
 and stops about one meter away. It does not command the waist/torso joints by
-default.
+default. If LiDAR distance is unavailable, it can still turn toward the
+selected person and uses a slow visual fallback capped at
+`visual_fallback_max_forward_speed:=0.12` while the target is centered.
 
 Before running, use the controller to put the robot into Stable Standing Mode
 (for position-control stand / locomotion modes press `R2 + X`) and release the
@@ -182,7 +184,33 @@ ros2 launch x2_motion_audio_tools x2_person_follow.launch.py \
 
 Expected detection logs include person count, selected bbox/confidence, camera
 bearing, base bearing, camera FPS, LiDAR FPS, valid point count, sector point
-count, and the estimated distance.
+count, estimated distance, and current motion reason.
+
+Debug topics are published by default:
+
+- `/x2/person_follow/debug_image` shows all person boxes, the selected `TRACK`
+  target, center/deadzone lines, distance, bearing, confidence, and current
+  velocity command.
+- `/x2/person_follow/debug_markers` shows the selected target ray, LiDAR sector,
+  target point, and motion text in RViz.
+- `/x2/person_follow/status` publishes JSON status for non-GUI checks.
+
+Open the camera and LiDAR views from launch on a GUI-capable session:
+
+```bash
+sudo apt install ros-humble-rqt-image-view ros-humble-rviz2
+ros2 launch x2_motion_audio_tools x2_person_follow.launch.py \
+  start_image_view:=true \
+  start_rviz:=true
+```
+
+Or open the debug streams manually:
+
+```bash
+ros2 run rqt_image_view rqt_image_view /x2/person_follow/debug_image
+rviz2 -d ~/ros2_ws/install/x2_motion_audio_tools/share/x2_motion_audio_tools/launch/x2_person_follow_debug.rviz
+ros2 topic echo /x2/person_follow/status
+```
 
 If the body turns away from the person, flip the angular sign by using a
 negative angular gain:
@@ -204,13 +232,22 @@ The follower only walks forward when the target is mostly centered. It turns in
 place when the target bearing is outside `max_forward_bearing_deg:=25.0`.
 Default speed limits are conservative:
 `max_forward_speed:=0.25`, `max_angular_speed:=0.45`, and
-`forward_gain:=0.28`.
+`forward_gain:=0.28`. Visual fallback uses
+`visual_target_bbox_height_ratio:=0.55`, `visual_stop_deadband_ratio:=0.04`,
+and `visual_fallback_max_forward_speed:=0.12`.
 
 ```bash
 ros2 launch x2_motion_audio_tools x2_person_follow.launch.py \
   stop_distance_m:=1.0 \
   max_forward_speed:=0.18 \
   max_angular_speed:=0.30
+```
+
+To disable the visual fallback and require LiDAR before walking:
+
+```bash
+ros2 launch x2_motion_audio_tools x2_person_follow.launch.py \
+  visual_fallback_enabled:=false
 ```
 
 The previous torso-only tracker is preserved as `x2_person_track_torso`:

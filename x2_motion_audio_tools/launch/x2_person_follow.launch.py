@@ -2,9 +2,11 @@
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
@@ -35,6 +37,27 @@ def generate_launch_description():
     waist_max_jerk = LaunchConfiguration("waist_max_jerk")
     waist_hold_on_lost = LaunchConfiguration("waist_hold_on_lost")
     waist_invert_direction = LaunchConfiguration("waist_invert_direction")
+    input_source_retry_sec = LaunchConfiguration("input_source_retry_sec")
+    visual_fallback_enabled = LaunchConfiguration("visual_fallback_enabled")
+    visual_target_bbox_height_ratio = LaunchConfiguration(
+        "visual_target_bbox_height_ratio"
+    )
+    visual_fallback_max_forward_speed = LaunchConfiguration(
+        "visual_fallback_max_forward_speed"
+    )
+    visual_stop_deadband_ratio = LaunchConfiguration("visual_stop_deadband_ratio")
+    publish_debug_image = LaunchConfiguration("publish_debug_image")
+    publish_debug_markers = LaunchConfiguration("publish_debug_markers")
+    publish_status = LaunchConfiguration("publish_status")
+    start_image_view = LaunchConfiguration("start_image_view")
+    start_rviz = LaunchConfiguration("start_rviz")
+    debug_rviz_config = PathJoinSubstitution(
+        [
+            FindPackageShare("x2_motion_audio_tools"),
+            "launch",
+            "x2_person_follow_debug.rviz",
+        ]
+    )
 
     return LaunchDescription(
         [
@@ -173,6 +196,56 @@ def generate_launch_description():
                 default_value="false",
                 description="Flip waist yaw direction if the torso turns away.",
             ),
+            DeclareLaunchArgument(
+                "input_source_retry_sec",
+                default_value="2.0",
+                description="Seconds between locomotion input-source registration retries.",
+            ),
+            DeclareLaunchArgument(
+                "visual_fallback_enabled",
+                default_value="true",
+                description="Use bbox size for slow forward motion when LiDAR distance is unavailable.",
+            ),
+            DeclareLaunchArgument(
+                "visual_target_bbox_height_ratio",
+                default_value="0.55",
+                description="Target person bbox height ratio for visual fallback.",
+            ),
+            DeclareLaunchArgument(
+                "visual_fallback_max_forward_speed",
+                default_value="0.12",
+                description="Maximum visual-fallback forward speed in m/s.",
+            ),
+            DeclareLaunchArgument(
+                "visual_stop_deadband_ratio",
+                default_value="0.04",
+                description="Visual fallback bbox-height deadband as image-height ratio.",
+            ),
+            DeclareLaunchArgument(
+                "publish_debug_image",
+                default_value="true",
+                description="Publish annotated camera image on /x2/person_follow/debug_image.",
+            ),
+            DeclareLaunchArgument(
+                "publish_debug_markers",
+                default_value="true",
+                description="Publish RViz markers on /x2/person_follow/debug_markers.",
+            ),
+            DeclareLaunchArgument(
+                "publish_status",
+                default_value="true",
+                description="Publish JSON status on /x2/person_follow/status.",
+            ),
+            DeclareLaunchArgument(
+                "start_image_view",
+                default_value="false",
+                description="Start rqt_image_view for the debug image.",
+            ),
+            DeclareLaunchArgument(
+                "start_rviz",
+                default_value="false",
+                description="Start RViz with LiDAR and target marker displays.",
+            ),
             Node(
                 package="x2_motion_audio_tools",
                 executable="x2_person_follow",
@@ -253,8 +326,48 @@ def generate_launch_description():
                         "waist_invert_direction": ParameterValue(
                             waist_invert_direction, value_type=bool
                         ),
+                        "input_source_retry_sec": ParameterValue(
+                            input_source_retry_sec, value_type=float
+                        ),
+                        "visual_fallback_enabled": ParameterValue(
+                            visual_fallback_enabled, value_type=bool
+                        ),
+                        "visual_target_bbox_height_ratio": ParameterValue(
+                            visual_target_bbox_height_ratio, value_type=float
+                        ),
+                        "visual_fallback_max_forward_speed": ParameterValue(
+                            visual_fallback_max_forward_speed, value_type=float
+                        ),
+                        "visual_stop_deadband_ratio": ParameterValue(
+                            visual_stop_deadband_ratio, value_type=float
+                        ),
+                        "publish_debug_image": ParameterValue(
+                            publish_debug_image, value_type=bool
+                        ),
+                        "publish_debug_markers": ParameterValue(
+                            publish_debug_markers, value_type=bool
+                        ),
+                        "publish_status": ParameterValue(
+                            publish_status, value_type=bool
+                        ),
                     }
                 ],
+            ),
+            Node(
+                package="rqt_image_view",
+                executable="rqt_image_view",
+                name="x2_person_follow_image_view",
+                arguments=["/x2/person_follow/debug_image"],
+                condition=IfCondition(start_image_view),
+                output="screen",
+            ),
+            Node(
+                package="rviz2",
+                executable="rviz2",
+                name="x2_person_follow_rviz",
+                arguments=["-d", debug_rviz_config],
+                condition=IfCondition(start_rviz),
+                output="screen",
             ),
         ]
     )
