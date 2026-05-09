@@ -68,7 +68,7 @@ except ImportError:
 
 
 SOURCE_NAME = "person_follower"
-BUILD_MARKER = "x2_person_follow stereo-local-yolo direct-image v0.1.1"
+BUILD_MARKER = "x2_person_follow stereo-local-yolo direct-image v0.1.2"
 DEFAULT_MODEL_PATH = "yolov8n.pt"
 TTS_SERVICE = "/aimdk_5Fmsgs/srv/PlayTts"
 

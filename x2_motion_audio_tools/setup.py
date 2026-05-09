@@ -4,19 +4,11 @@ package_name = "x2_motion_audio_tools"
 
 setup(
     name=package_name,
-    version="0.1.1",
+    version="0.1.2",
     packages=find_packages(exclude=["test"]),
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
-        (
-            "share/" + package_name,
-            [
-                "package.xml",
-                "README.md",
-                "requirements-voice.txt",
-                "requirements-person.txt",
-            ],
-        ),
+        ("share/" + package_name, ["package.xml", "README.md"]),
         (
             "share/" + package_name + "/launch",
             [
@@ -31,7 +23,6 @@ setup(
     maintainer_email="dev@robohack2026.local",
     description="AgiBot X2 voice, microphone, and motion helper nodes",
     license="Apache-2.0",
-    tests_require=["pytest"],
     entry_points={
         "console_scripts": [
             "x2_bedrock_voice_assistant = x2_motion_audio_tools.x2_bedrock_voice_assistant:main",

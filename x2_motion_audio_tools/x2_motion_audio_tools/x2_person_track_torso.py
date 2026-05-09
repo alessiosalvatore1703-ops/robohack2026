@@ -66,7 +66,7 @@ except ImportError:
 
 
 SOURCE_NAME = "person_torso_tracker"
-BUILD_MARKER = "x2_person_track_torso stereo-local-yolo direct-image v0.1.1"
+BUILD_MARKER = "x2_person_track_torso stereo-local-yolo direct-image v0.1.2"
 DEFAULT_MODEL_PATH = "yolov8n.pt"
 TTS_SERVICE = "/aimdk_5Fmsgs/srv/PlayTts"
 

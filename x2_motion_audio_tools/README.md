@@ -164,7 +164,7 @@ arguments; both are forced onto this sensor path in code.
 The startup log should show:
 
 ```text
-x2_person_follow stereo-local-yolo direct-image v0.1.1
+x2_person_follow stereo-local-yolo direct-image v0.1.2
 camera_topic=/aima/hal/sensor/stereo_head_front_left/rgb_image
 lidar_topic=/aima/hal/sensor/lidar_chest_front/lidar_pointcloud
 ```
