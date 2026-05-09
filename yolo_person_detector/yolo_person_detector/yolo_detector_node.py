@@ -176,8 +176,9 @@ class YOLODetectorNode(Node):
             # Bounding box (center_x, center_y, size_x, size_y)
             bbox = BoundingBox2D()
             bbox.center = Pose2D()
-            bbox.center.x = float(det.bbox_x + det.bbox_w / 2.0)
-            bbox.center.y = float(det.bbox_y + det.bbox_h / 2.0)
+            bbox.center.position.x = float(det.bbox_x + det.bbox_w / 2.0)
+            bbox.center.position.y = float(det.bbox_y + det.bbox_h / 2.0)
+            bbox.center.theta = 0.0  # No rotation for axis-aligned bounding boxes
             bbox.size_x = float(det.bbox_w)
             bbox.size_y = float(det.bbox_h)
             d2d.bbox = bbox
