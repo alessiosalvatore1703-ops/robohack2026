@@ -1,0 +1,36 @@
+# YOLO Person Detector Configuration
+# For Agibot X2 Robot
+
+yolo_detector:
+  ros__parameters:
+    # Model settings
+    model_path: "yolov8n.pt"
+    confidence_threshold: 0.5
+    nms_threshold: 0.45
+    device: "cpu"  # "cuda" for GPU, "cpu" for CPU, "mps" for Apple Silicon
+    input_size: 640
+
+    # Input topic (default: RGBD head front camera)
+    input_topic: "/aima/hal/sensor/rgbd_head_front/rgb_image"
+
+    # Visualization
+    publish_annotated: true
+
+camera_selector:
+  ros__parameters:
+    # Available cameras:
+    #   rgbd_head_front - RGB-D camera (has depth)
+    #   rgb_head_rear - rear-facing RGB camera
+    #   stereo_head_front_left - left stereo camera
+    #   stereo_head_front_right - right stereo camera
+    active_camera: "rgbd_head_front"
+    timeout_sec: 2.0
+
+yolo_visualization:
+  ros__parameters:
+    bbox_color_r: 0
+    bbox_color_g: 255
+    bbox_color_b: 0
+    bbox_thickness: 2
+    show_confidence: true
+    font_scale: 0.6
