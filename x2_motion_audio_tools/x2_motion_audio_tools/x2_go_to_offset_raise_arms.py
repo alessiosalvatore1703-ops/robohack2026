@@ -37,6 +37,7 @@ except ImportError:
 
 
 SOURCE_NAME = "coordinate_offset_arms"
+SCRIPT_VERSION = "single-line-offset-arm-hold-v2"
 
 SUBSCRIBER_QOS = QoSProfile(
     reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -841,6 +842,7 @@ def main(args=None) -> int:
 
     rclpy.init()
     node = CoordinateOffsetRaiseArms(control_hz=parsed.control_hz)
+    node.get_logger().info(f"Running {SCRIPT_VERSION} from {__file__}")
 
     def signal_handler(sig, _frame):
         node.get_logger().info(f"Received signal {sig}; stopping velocity.")
