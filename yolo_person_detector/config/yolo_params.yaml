@@ -21,11 +21,11 @@ yolo_detector:
 camera_selector:
   ros__parameters:
     # Available cameras:
-    #   rgb_head_front_center   - front-facing RGB camera (default)
+    #   rgb_head_front_center   - front-facing RGB camera
     #   rgb_head_rear           - rear-facing RGB camera
-    #   stereo_head_front_left  - left stereo camera
+    #   stereo_head_front_left  - left stereo camera (default; confirmed publishing on this robot)
     #   stereo_head_front_right - right stereo camera
-    active_camera: "rgb_head_front_center"
+    active_camera: "stereo_head_front_left"
 
     # Input stream format. Mirrors echo_camera_rgbd's topic_type:
     #   rgb_image            - raw sensor_msgs/Image

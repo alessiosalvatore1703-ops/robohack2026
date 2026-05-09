@@ -15,6 +15,9 @@ Per Agibot X2 HAL (rgb_head_front_center, plain RGB):
   - camera_info                 sensor_msgs/CameraInfo
 
 All use SensorDataQoS (BEST_EFFORT + KEEP_LAST + VOLATILE, depth 5).
+
+The active camera is fixed at launch time via the `active_camera` and
+`topic_type` parameters. There is no runtime switching.
 """
 
 import time
@@ -92,7 +95,7 @@ class CameraSelectorNode(Node):
         super().__init__('camera_selector')
 
         # --- Parameters --------------------------------------------------
-        self.declare_parameter('active_camera', 'rgb_head_front_center')
+        self.declare_parameter('active_camera', 'stereo_head_front_left')
         # 'rgb_image' (raw) or 'rgb_image_compressed'. Mirrors the
         # topic_type names used by echo_camera_rgbd for familiarity.
         self.declare_parameter('topic_type', 'rgb_image')
@@ -113,9 +116,9 @@ class CameraSelectorNode(Node):
             self.get_logger().warn(
                 f"Unknown camera '{self.active_camera}', "
                 f"available: {list(CAMERA_LAYOUTS.keys())}. "
-                f"Defaulting to 'rgb_head_front_center'."
+                f"Defaulting to 'stereo_head_front_left'."
             )
-            self.active_camera = 'rgb_head_front_center'
+            self.active_camera = 'stereo_head_front_left'
 
         if self.topic_type not in ('rgb_image', 'rgb_image_compressed'):
             self.get_logger().warn(
@@ -320,25 +323,6 @@ class CameraSelectorNode(Node):
                 f'No images from {self.active_camera} '
                 f"('{self._image_topic}') for {elapsed:.1f}s"
             )
-
-    # ------------------------------------------------------------------ #
-    # Runtime control                                                     #
-    # ------------------------------------------------------------------ #
-
-    def switch_camera(self, camera_name: str) -> bool:
-        if camera_name not in CAMERA_LAYOUTS:
-            self.get_logger().error(
-                f"Cannot switch to unknown camera '{camera_name}'. "
-                f'Available: {list(CAMERA_LAYOUTS.keys())}'
-            )
-            return False
-        self.active_camera = camera_name
-        self._image_topic_override = ''
-        self._info_topic_override = ''
-        self._frame_count = 0
-        self._last_image_time = 0.0
-        self._resolve_and_subscribe()
-        return True
 
 
 def main(args=None):

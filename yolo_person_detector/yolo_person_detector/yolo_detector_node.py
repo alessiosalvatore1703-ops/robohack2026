@@ -115,30 +115,6 @@ class YOLODetectorNode(Node):
                 f'`ros2 topic info -v {input_topic}`.'
             )
 
-        # so we don't silently miss frames on a reliability/durability
-        # mismatch (the X2 HAL uses a variety of profiles).
-        pub_infos = self.get_publishers_info_by_topic(input_topic)
-        if pub_infos:
-            image_qos,
-            image_qos = QoSProfile(
-                reliability=pub_qos.reliability,
-                history=HistoryPolicy.KEEP_LAST,
-                depth=5,
-                durability=pub_qos.durability,
-            )
-            self.get_logger().info(
-                f"Adopting publisher QoS on '{input_topic}': "
-                f"reliability={pub_qos.reliability.name}, "
-                f"durability={pub_qos.durability.name}"
-            )
-        else:
-            image_qos = SENSOR_QOS
-            self.get_logger().warn(
-                f"No publisher on '{input_topic}' yet — falling back to "
-                f'BEST_EFFORT sensor QoS. If messages never arrive, check '
-                f'`ros2 topic info -v {input_topic}`.'
-            )
-
         self.image_sub = self.create_subscription(
             Image,
             input_topic,
