@@ -29,6 +29,11 @@ from aimdk_msgs.msg import JointCommand, JointCommandArray, JointStateArray
 from aimdk_msgs.msg import McLocomotionVelocity, MessageHeader
 from aimdk_msgs.srv import SetMcInputSource
 
+try:
+    import ruckig
+except ImportError:
+    ruckig = None
+
 
 SOURCE_NAME = "coordinate_offset_arms"
 
@@ -163,16 +168,25 @@ class CoordinateOffsetRaiseArms(Node):
         )
 
         self.arm_positions: Optional[List[float]] = None
+        self.arm_velocities: Optional[List[float]] = None
 
     def arm_state_callback(self, msg: JointStateArray) -> None:
         by_name = {joint.name: joint for joint in msg.joints}
         if all(joint.name in by_name for joint in ARM_JOINTS):
             self.arm_positions = [by_name[joint.name].position for joint in ARM_JOINTS]
+            self.arm_velocities = [
+                getattr(by_name[joint.name], "velocity", 0.0)
+                for joint in ARM_JOINTS
+            ]
             return
 
         if len(msg.joints) >= len(ARM_JOINTS):
             self.arm_positions = [
                 msg.joints[i].position for i in range(len(ARM_JOINTS))
+            ]
+            self.arm_velocities = [
+                getattr(msg.joints[i], "velocity", 0.0)
+                for i in range(len(ARM_JOINTS))
             ]
 
     def register_input_source(self) -> bool:
@@ -349,10 +363,16 @@ class CoordinateOffsetRaiseArms(Node):
                 )
         return target
 
-    def make_arm_command(self, positions: List[float]) -> JointCommandArray:
+    def make_arm_command(
+        self,
+        positions: List[float],
+        velocities: Optional[List[float]] = None,
+    ) -> JointCommandArray:
         cmd = JointCommandArray()
         cmd.header = MessageHeader()
         cmd.header.stamp = self.get_clock().now().to_msg()
+        if velocities is None:
+            velocities = [0.0] * len(ARM_JOINTS)
 
         for index, joint_info in enumerate(ARM_JOINTS):
             joint = JointCommand()
@@ -362,7 +382,7 @@ class CoordinateOffsetRaiseArms(Node):
                 joint_info.lower_limit,
                 joint_info.upper_limit,
             )
-            joint.velocity = 0.0
+            joint.velocity = velocities[index]
             joint.effort = 0.0
             joint.stiffness = joint_info.kp
             joint.damping = joint_info.kd
@@ -370,35 +390,164 @@ class CoordinateOffsetRaiseArms(Node):
 
         return cmd
 
-    def publish_arm_pose(self, positions: List[float]) -> None:
-        self.arm_pub.publish(self.make_arm_command(positions))
+    def publish_arm_pose(
+        self,
+        positions: List[float],
+        velocities: Optional[List[float]] = None,
+    ) -> None:
+        self.arm_pub.publish(self.make_arm_command(positions, velocities))
 
     def raise_arms_to_angle(
         self,
         arm_angle_deg: float,
         move_seconds: float,
-        hold_seconds: float,
+        arm_control_hz: float,
+        hold_seconds: Optional[float],
+    ) -> None:
+        if self.arm_positions is None:
+            raise RuntimeError("Arm state is unavailable.")
+
+        target = self.arm_target_from_current(arm_angle_deg)
+        self.get_logger().info(
+            f"Raising both arms to {arm_angle_deg:.1f} deg shoulder pitch."
+        )
+
+        if ruckig is None:
+            self.get_logger().warning(
+                "ruckig Python package not found; using timed cosine fallback. "
+                "Install ruckig on the robot for smoother arm motion."
+            )
+            self.raise_arms_with_fallback(
+                target=target,
+                move_seconds=move_seconds,
+                arm_control_hz=arm_control_hz,
+            )
+        else:
+            self.raise_arms_with_ruckig(
+                target=target,
+                arm_control_hz=arm_control_hz,
+                minimum_duration=move_seconds,
+            )
+
+        self.hold_arm_pose(
+            target=target,
+            arm_control_hz=arm_control_hz,
+            hold_seconds=hold_seconds,
+        )
+
+    def raise_arms_with_ruckig(
+        self,
+        target: List[float],
+        arm_control_hz: float,
+        minimum_duration: float,
+    ) -> None:
+        if self.arm_positions is None:
+            raise RuntimeError("Arm state is unavailable.")
+        if ruckig is None:
+            raise RuntimeError("ruckig is unavailable.")
+
+        dofs = len(ARM_JOINTS)
+        period = 1.0 / arm_control_hz
+        max_velocity = [1.0] * dofs
+        current_velocity = list(self.arm_velocities or [0.0] * dofs)
+        if len(current_velocity) != dofs:
+            current_velocity = [0.0] * dofs
+        current_velocity = [
+            clamp(velocity, -limit, limit)
+            for velocity, limit in zip(current_velocity, max_velocity)
+        ]
+
+        otg = ruckig.Ruckig(dofs, period)
+        inp = ruckig.InputParameter(dofs)
+        out = ruckig.OutputParameter(dofs)
+
+        inp.current_position = [
+            clamp(position, joint.lower_limit, joint.upper_limit)
+            for position, joint in zip(self.arm_positions, ARM_JOINTS)
+        ]
+        inp.current_velocity = current_velocity
+        inp.current_acceleration = [0.0] * dofs
+        inp.target_position = target
+        inp.target_velocity = [0.0] * dofs
+        inp.target_acceleration = [0.0] * dofs
+        inp.max_velocity = max_velocity
+        inp.max_acceleration = [1.0] * dofs
+        inp.max_jerk = [25.0] * dofs
+        if minimum_duration > 0.0 and hasattr(inp, "minimum_duration"):
+            inp.minimum_duration = minimum_duration
+
+        self.get_logger().info(
+            f"Publishing Ruckig arm trajectory at {arm_control_hz:.1f} Hz."
+        )
+
+        while rclpy.ok():
+            result = otg.update(inp, out)
+            if result not in [ruckig.Result.Working, ruckig.Result.Finished]:
+                raise RuntimeError(f"Ruckig arm trajectory failed: {result}")
+
+            positions = list(out.new_position)
+            velocities = list(out.new_velocity)
+            self.publish_arm_pose(positions, velocities)
+            inp.current_position = positions
+            inp.current_velocity = velocities
+            inp.current_acceleration = list(out.new_acceleration)
+            rclpy.spin_once(self, timeout_sec=0.0)
+
+            if result == ruckig.Result.Finished:
+                break
+            time.sleep(period)
+
+        self.publish_arm_pose(target)
+
+    def raise_arms_with_fallback(
+        self,
+        target: List[float],
+        move_seconds: float,
+        arm_control_hz: float,
     ) -> None:
         if self.arm_positions is None:
             raise RuntimeError("Arm state is unavailable.")
 
         start = list(self.arm_positions)
-        target = self.arm_target_from_current(arm_angle_deg)
+        period = 1.0 / arm_control_hz
         start_time = time.monotonic()
-        self.get_logger().info(
-            f"Raising both arms to {arm_angle_deg:.1f} deg over {move_seconds:.2f} s."
-        )
+        previous_positions = list(start)
 
         while rclpy.ok():
             elapsed = time.monotonic() - start_time
             alpha = smoothstep(elapsed / move_seconds)
             positions = [s + (t - s) * alpha for s, t in zip(start, target)]
-            self.publish_arm_pose(positions)
+            velocities = [
+                (position - previous) / period
+                for position, previous in zip(positions, previous_positions)
+            ]
+            self.publish_arm_pose(positions, velocities)
+            previous_positions = list(positions)
             rclpy.spin_once(self, timeout_sec=0.0)
 
             if elapsed >= move_seconds:
                 break
-            time.sleep(self.period)
+            time.sleep(period)
+
+        self.publish_arm_pose(target)
+
+    def hold_arm_pose(
+        self,
+        target: List[float],
+        arm_control_hz: float,
+        hold_seconds: Optional[float],
+    ) -> None:
+        period = 1.0 / arm_control_hz
+
+        if hold_seconds is None:
+            self.get_logger().info(
+                "Holding arm pose until this node is interrupted."
+            )
+            while rclpy.ok():
+                self.publish_arm_pose(target)
+                rclpy.spin_once(self, timeout_sec=0.0)
+                time.sleep(period)
+            return
 
         if hold_seconds <= 0.0:
             self.get_logger().info("Arm target reached.")
@@ -409,7 +558,7 @@ class CoordinateOffsetRaiseArms(Node):
         while rclpy.ok() and time.monotonic() < hold_until:
             self.publish_arm_pose(target)
             rclpy.spin_once(self, timeout_sec=0.0)
-            time.sleep(self.period)
+            time.sleep(period)
 
     def run_travel_plan(self, plan: TravelPlan, args: argparse.Namespace) -> None:
         self.get_logger().info(format_plan(plan, args.step_length_m))
@@ -501,8 +650,27 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument("--settle-seconds", type=float, default=0.75)
     parser.add_argument("--control-hz", type=float, default=50.0)
     parser.add_argument("--arm-angle-deg", type=float, default=90.0)
-    parser.add_argument("--arm-move-seconds", type=float, default=4.0)
-    parser.add_argument("--arm-hold-seconds", type=float, default=3.0)
+    parser.add_argument(
+        "--arm-control-hz",
+        type=float,
+        default=500.0,
+        help="HAL arm command frequency; 500 Hz matches the 2 ms Ruckig example.",
+    )
+    parser.add_argument(
+        "--arm-move-seconds",
+        type=float,
+        default=4.0,
+        help="Minimum Ruckig duration when supported; fallback move duration.",
+    )
+    parser.add_argument(
+        "--arm-hold-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Seconds to keep publishing the raised-arm pose. "
+            "Omit to hold until interrupted."
+        ),
+    )
     parser.add_argument(
         "--no-face-target",
         dest="face_target",
@@ -560,6 +728,7 @@ def validate_args(args: argparse.Namespace) -> None:
         ("turn-speed", args.turn_speed),
         ("step-length-m", args.step_length_m),
         ("control-hz", args.control_hz),
+        ("arm-control-hz", args.arm_control_hz),
         ("arm-move-seconds", args.arm_move_seconds),
     ]
     for name, value in checks:
@@ -570,7 +739,7 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--step-pause-sec must be >= 0.")
     if args.settle_seconds < 0.0:
         raise ValueError("--settle-seconds must be >= 0.")
-    if args.arm_hold_seconds < 0.0:
+    if args.arm_hold_seconds is not None and args.arm_hold_seconds < 0.0:
         raise ValueError("--arm-hold-seconds must be >= 0.")
 
 
@@ -626,6 +795,7 @@ def main(args=None) -> int:
         node.raise_arms_to_angle(
             arm_angle_deg=parsed.arm_angle_deg,
             move_seconds=parsed.arm_move_seconds,
+            arm_control_hz=parsed.arm_control_hz,
             hold_seconds=parsed.arm_hold_seconds,
         )
         return 0
