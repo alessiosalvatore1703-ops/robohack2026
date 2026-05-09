@@ -58,7 +58,10 @@ try:
 except ImportError:
     AIMDK_AVAILABLE = False
 
-from yolo_person_detector.yolo_wrapper import Detection, InferenceResult, YOLOWrapper
+try:
+    from .x2_yolo_wrapper import Detection, InferenceResult, YOLOWrapper
+except ImportError:
+    from x2_yolo_wrapper import Detection, InferenceResult, YOLOWrapper
 
 
 SOURCE_NAME = "person_follower"

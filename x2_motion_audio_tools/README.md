@@ -3,9 +3,9 @@
 ROS 2 helper nodes for AgiBot X2 audio, speech, open-loop coordinate motion,
 forward/backward movement, torso person tracking, and cautious arm raising.
 
-This package is intentionally separate from `yolo_person_detector` so the
-existing detection and follower code remains unchanged. The torso tracker reuses
-that package's YOLO wrapper, but commands only the X2 HAL waist joint by default.
+This package is intentionally separate from `yolo_person_detector`. Person
+follow and torso tracking use the local `x2_yolo_wrapper.py` implementation so
+changes to the shared YOLO package cannot alter their detection path.
 
 ## Build
 
@@ -24,10 +24,11 @@ For the AWS voice assistant and transcription logger:
 python3 -m pip install -r src/x2_motion_audio_tools/requirements-voice.txt
 ```
 
-For person detection and torso tracking, install the YOLO package dependencies:
+For person detection and torso tracking, install this package's local YOLO
+dependencies:
 
 ```bash
-python3 -m pip install -r src/yolo_person_detector/requirements.txt
+python3 -m pip install -r src/x2_motion_audio_tools/requirements-person.txt
 sudo apt install ros-humble-cv-bridge ros-humble-sensor-msgs-py
 ```
 
@@ -125,11 +126,12 @@ ros2 run x2_motion_audio_tools x2_turn_to_person_tts \
 
 ## Person Body Following
 
-`x2_person_follow` runs YOLO person detection on either top front stereo camera,
-says "Hello" once per visible encounter, reads the chest `PointCloud2` LiDAR,
-logs camera/YOLO/LiDAR details, registers a locomotion input source, turns with
-the legs, walks toward the selected person, and stops about one meter away. It
-does not command the waist/torso joints by default.
+`x2_person_follow` runs the package-local YOLO person detector on the forced
+left front stereo camera, says "Hello" once per visible encounter, reads the
+chest `PointCloud2` LiDAR, logs camera/YOLO/LiDAR details, registers a
+locomotion input source, turns with the legs, walks toward the selected person,
+and stops about one meter away. It does not command the waist/torso joints by
+default.
 
 Before running, use the controller to put the robot into Stable Standing Mode
 (for position-control stand / locomotion modes press `R2 + X`) and release the
