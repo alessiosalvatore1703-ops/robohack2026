@@ -318,7 +318,7 @@ class X2StereoPersonFollow(Node):
 
         self.tts_client = None
         self.emoji_client = None
-        if self.announce_enabled and AIMDK_AVAILABLE and not self.dry_run:
+        if self.announce_enabled and AIMDK_AVAILABLE:
             if PLAYTTS_AVAILABLE:
                 self.tts_client = self.create_client(
                     PlayTts,
@@ -379,6 +379,12 @@ class X2StereoPersonFollow(Node):
         if self.enabled and not self.dry_run:
             self.enabled = False
             self.spawn_activation()
+        elif self.enabled and self.dry_run:
+            self.announce(
+                "startup",
+                self.announce_startup_text,
+                self.announce_startup_emoji_id,
+            )
 
     def enable_callback(self, msg: Bool) -> None:
         if msg.data:
@@ -387,6 +393,11 @@ class X2StereoPersonFollow(Node):
             if self.dry_run:
                 self.enabled = True
                 self.get_logger().info("Follow dry-run enabled.")
+                self.announce(
+                    "startup",
+                    self.announce_startup_text,
+                    self.announce_startup_emoji_id,
+                )
             else:
                 self.get_logger().info("Activating stereo person follow.")
                 self.spawn_activation()
@@ -416,6 +427,11 @@ class X2StereoPersonFollow(Node):
         try:
             if self.dry_run:
                 self.enabled = True
+                self.announce(
+                    "startup",
+                    self.announce_startup_text,
+                    self.announce_startup_emoji_id,
+                )
                 return
 
             if self.auto_enable_stable_stand:
@@ -738,8 +754,11 @@ class X2StereoPersonFollow(Node):
             )
 
     def announce(self, label: str, text: str, emoji_id: int) -> None:
-        """Fire-and-forget TTS + emoji. Never raises; failures only log."""
-        if not self.announce_enabled or self.dry_run:
+        """Fire-and-forget TTS + emoji. Never raises; failures only log.
+
+        Safe to run in dry_run because neither service causes robot motion.
+        """
+        if not self.announce_enabled:
             return
         threading.Thread(
             target=self._announce_worker,
