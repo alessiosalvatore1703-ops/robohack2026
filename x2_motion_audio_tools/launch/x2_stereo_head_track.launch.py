@@ -22,6 +22,7 @@ def generate_launch_description():
     max_processing_fps = LaunchConfiguration("max_processing_fps")
     output_width = LaunchConfiguration("output_width")
     baseline_m = LaunchConfiguration("baseline_m")
+    depth_disparity_percentile = LaunchConfiguration("depth_disparity_percentile")
     sync_slop_sec = LaunchConfiguration("sync_slop_sec")
     right_buffer_size = LaunchConfiguration("right_buffer_size")
     jpeg_quality = LaunchConfiguration("jpeg_quality")
@@ -62,6 +63,9 @@ def generate_launch_description():
     follow_control_rate_hz = LaunchConfiguration("follow_control_rate_hz")
     follow_reverse_enabled = LaunchConfiguration("follow_reverse_enabled")
     follow_invert_angular = LaunchConfiguration("follow_invert_angular")
+    follow_hold_base_in_stop_band = LaunchConfiguration(
+        "follow_hold_base_in_stop_band"
+    )
 
     return LaunchDescription(
         [
@@ -134,6 +138,14 @@ def generate_launch_description():
                 "baseline_m",
                 default_value="0.0578",
                 description="Stereo baseline in meters.",
+            ),
+            DeclareLaunchArgument(
+                "depth_disparity_percentile",
+                default_value="70.0",
+                description=(
+                    "Disparity percentile used for person depth. Higher values "
+                    "bias distance closer for safer following."
+                ),
             ),
             DeclareLaunchArgument(
                 "sync_slop_sec",
@@ -312,6 +324,14 @@ def generate_launch_description():
                 default_value="false",
                 description="Flip base yaw direction if the robot turns away.",
             ),
+            DeclareLaunchArgument(
+                "follow_hold_base_in_stop_band",
+                default_value="true",
+                description=(
+                    "When true, stop base yaw as well as forward motion inside "
+                    "the close-distance stop band."
+                ),
+            ),
             Node(
                 package="yolo_person_detector",
                 executable="stereo_final_annotator_node",
@@ -333,6 +353,9 @@ def generate_launch_description():
                         "max_processing_fps": max_processing_fps,
                         "output_width": output_width,
                         "baseline_m": baseline_m,
+                        "depth_disparity_percentile": ParameterValue(
+                            depth_disparity_percentile, value_type=float
+                        ),
                         "sync_slop_sec": sync_slop_sec,
                         "right_buffer_size": right_buffer_size,
                         "jpeg_quality": jpeg_quality,
@@ -428,6 +451,9 @@ def generate_launch_description():
                         ),
                         "invert_angular": ParameterValue(
                             follow_invert_angular, value_type=bool
+                        ),
+                        "hold_base_in_stop_band": ParameterValue(
+                            follow_hold_base_in_stop_band, value_type=bool
                         ),
                         "target_timeout_sec": ParameterValue(
                             target_timeout_sec, value_type=float

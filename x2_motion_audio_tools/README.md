@@ -142,14 +142,14 @@ Default behavior is safe:
 Head tracking only:
 
 ```bash
-ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py device:=cuda
+ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py device:=cpu
 ```
 
 Gantry dry-run walking follow:
 
 ```bash
 ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
-  device:=cuda \
+  device:=cpu \
   follow_enabled:=true \
   follow_dry_run:=true
 ```
@@ -160,12 +160,17 @@ Active gantry follow:
 ros2 run py_examples set_mc_action SD
 
 ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
-  device:=cuda \
+  device:=cpu \
   follow_enabled:=true \
   follow_dry_run:=false \
-  follow_max_forward_speed:=0.10 \
+  follow_max_forward_speed:=0.15 \
   follow_min_forward_speed:=0.10 \
-  follow_max_angular_speed:=0.20
+  follow_max_angular_speed:=0.25 \
+  follow_max_forward_bearing_deg:=20.0 \
+  follow_stop_min_m:=0.45 \
+  follow_stop_max_m:=1.0 \
+  follow_target_distance_m:=0.85 \
+  depth_disparity_percentile:=75.0
 ```
 
 Once the manual `SD` sequence is trusted, the launch can request Stable Stand
@@ -173,13 +178,18 @@ for you:
 
 ```bash
 ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
-  device:=cuda \
+  device:=cpu \
   follow_enabled:=true \
   follow_dry_run:=false \
   follow_auto_enable_stable_stand:=true \
-  follow_max_forward_speed:=0.10 \
+  follow_max_forward_speed:=0.15 \
   follow_min_forward_speed:=0.10 \
-  follow_max_angular_speed:=0.20
+  follow_max_angular_speed:=0.25 \
+  follow_max_forward_bearing_deg:=20.0 \
+  follow_stop_min_m:=0.45 \
+  follow_stop_max_m:=1.0 \
+  follow_target_distance_m:=0.85 \
+  depth_disparity_percentile:=75.0
 ```
 
 The stereo walking supervisor publishes high-level
@@ -187,7 +197,8 @@ The stereo walking supervisor publishes high-level
 It never commands leg joints directly. It consumes
 `/stereo_person/target_point`, rotates the base toward the target, walks forward
 only when the person is centered and farther than the stop band, and stops in
-the `0.5-1.0 m` range by default.
+the `0.5-1.0 m` range by default. By default, the base fully stops inside the
+stop band; the head can keep tracking without stepping in place.
 
 The old waist tracking tools are still available as proof-of-concept utilities,
 but do not run them during the `SD` walking demo.
@@ -320,3 +331,23 @@ ros2 run x2_motion_audio_tools x2_forward_back_raise_arms
 The motion nodes publish high-level locomotion velocity commands. Arm raising
 uses low-level HAL joint commands, so only run arm sections when the robot is
 stable and your AimDK/HAL safety procedure is satisfied.
+
+Arm-only assist-ready pose test:
+
+```bash
+ros2 run x2_motion_audio_tools x2_arm_assist_pose --dry-run
+ros2 run x2_motion_audio_tools x2_arm_assist_pose \
+  --arm-angle-deg 45 \
+  --move-seconds 5 \
+  --hold-seconds 0
+```
+
+After the low-angle test is smooth, increase toward the default assist-ready
+pose:
+
+```bash
+ros2 run x2_motion_audio_tools x2_arm_assist_pose
+```
+
+`x2_arm_assist_pose` does not publish locomotion velocity, does not switch
+robot modes, and does not command waist or torso joints.

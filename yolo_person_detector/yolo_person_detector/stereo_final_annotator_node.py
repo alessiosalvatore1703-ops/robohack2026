@@ -100,6 +100,7 @@ class StereoFinalAnnotatorNode(Node):
         self.declare_parameter("max_depth_m", 8.0)
         self.declare_parameter("roi_shrink", 0.5)
         self.declare_parameter("min_valid_disparity_pixels", 80)
+        self.declare_parameter("depth_disparity_percentile", 70.0)
         self.declare_parameter("stereo_num_disparities", 96)
         self.declare_parameter("stereo_block_size", 7)
 
@@ -123,6 +124,10 @@ class StereoFinalAnnotatorNode(Node):
         self.roi_shrink = float(self.get_parameter("roi_shrink").value)
         self.min_valid_disparity_pixels = int(
             self.get_parameter("min_valid_disparity_pixels").value
+        )
+        self.depth_disparity_percentile = min(
+            max(float(self.get_parameter("depth_disparity_percentile").value), 50.0),
+            95.0,
         )
 
         self.yolo = YOLOWrapper(
@@ -234,9 +239,13 @@ class StereoFinalAnnotatorNode(Node):
         self.output_pub.publish(out)
         self.frame_count += 1
         if self.frame_count % 30 == 0:
+            closest_depth = "none"
+            if 0 in depths:
+                closest_depth = f"{depths[0].z_m:.2f}m"
             self.get_logger().info(
                 f"Frame {self.frame_count}: closest of {len(result.detections)} person(s), "
-                f"{len(depths)} depth label(s), {result.inference_time_ms:.1f} ms"
+                f"{len(depths)} depth label(s), z={closest_depth}, "
+                f"{result.inference_time_ms:.1f} ms"
             )
 
     def _right_callback(self, msg: CompressedImage) -> None:
@@ -391,7 +400,9 @@ class StereoFinalAnnotatorNode(Node):
         if valid.size < self.min_valid_disparity_pixels:
             return None
 
-        disp = float(np.median(valid))
+        # Use a nearer-biased disparity estimate for following safety. Background
+        # leakage inside a person ROI otherwise tends to overestimate distance.
+        disp = float(np.percentile(valid, self.depth_disparity_percentile))
         z_m = fx * baseline / disp
         if z_m < self.min_depth_m or z_m > self.max_depth_m:
             return None

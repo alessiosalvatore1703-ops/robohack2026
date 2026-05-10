@@ -76,13 +76,13 @@ If the base turns away from the human, flip `follow_invert_angular:=true`.
 Stereo vision only:
 
 ```bash
-ros2 launch yolo_person_detector stereo_person_pipeline.launch.py device:=cuda
+ros2 launch yolo_person_detector stereo_person_pipeline.launch.py device:=cpu
 ```
 
 Head tracking with vision:
 
 ```bash
-ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py device:=cuda
+ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py device:=cpu
 ```
 
 Gantry dry-run follow. This logs computed walking velocity but does not publish
@@ -90,7 +90,7 @@ locomotion commands:
 
 ```bash
 ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
-  device:=cuda \
+  device:=cpu \
   follow_enabled:=true \
   follow_dry_run:=true
 ```
@@ -103,12 +103,17 @@ does not expose an `rc` app, do not run `aima em stop-app rc`; use
 ros2 run py_examples set_mc_action SD
 
 ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
-  device:=cuda \
+  device:=cpu \
   follow_enabled:=true \
   follow_dry_run:=false \
-  follow_max_forward_speed:=0.10 \
+  follow_max_forward_speed:=0.15 \
   follow_min_forward_speed:=0.10 \
-  follow_max_angular_speed:=0.20
+  follow_max_angular_speed:=0.25 \
+  follow_max_forward_bearing_deg:=20.0 \
+  follow_stop_min_m:=0.45 \
+  follow_stop_max_m:=1.0 \
+  follow_target_distance_m:=0.85 \
+  depth_disparity_percentile:=75.0
 ```
 
 For a more automated demo, the follow supervisor can request Stable Stand during
@@ -116,13 +121,18 @@ activation:
 
 ```bash
 ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
-  device:=cuda \
+  device:=cpu \
   follow_enabled:=true \
   follow_dry_run:=false \
   follow_auto_enable_stable_stand:=true \
-  follow_max_forward_speed:=0.10 \
+  follow_max_forward_speed:=0.15 \
   follow_min_forward_speed:=0.10 \
-  follow_max_angular_speed:=0.20
+  follow_max_angular_speed:=0.25 \
+  follow_max_forward_bearing_deg:=20.0 \
+  follow_stop_min_m:=0.45 \
+  follow_stop_max_m:=1.0 \
+  follow_target_distance_m:=0.85 \
+  depth_disparity_percentile:=75.0
 ```
 
 Runtime enable and disable:
@@ -140,7 +150,8 @@ and that `point.z` changes correctly as a person approaches.
 Then run the follow supervisor in dry-run mode. Check logs:
 
 - Person centered and farther than `1.0 m`: `APPROACH`.
-- Person inside `0.5-1.0 m`: `STOP_BAND`.
+- Person inside the stop band: `STOP_BAND` with `forward=0.000` and
+  `angular=0.000`.
 - Person off center: `ALIGN`.
 - Target too close: `TOO_CLOSE`.
 - Lost target: `NO_TARGET`.
@@ -148,8 +159,24 @@ Then run the follow supervisor in dry-run mode. Check logs:
 
 Only after dry-run output is correct should locomotion be enabled on the gantry.
 Use low speed limits first. The robot should walk in place on the gantry while
-the target distance changes as the human approaches, then stop inside the
-`0.5-1.0 m` band.
+the target distance changes as the human approaches, then stop all base motion
+inside the stop band while the head continues tracking.
+
+Arm-only assist-ready pose test:
+
+```bash
+ros2 run x2_motion_audio_tools x2_arm_assist_pose --dry-run
+
+ros2 run x2_motion_audio_tools x2_arm_assist_pose \
+  --arm-angle-deg 45 \
+  --move-seconds 5 \
+  --hold-seconds 0
+```
+
+The arm-only script publishes full-group HAL arm commands only. It does not
+publish locomotion velocity, does not switch robot modes, and does not command
+waist or torso joints. The future head-tap trigger and chair-assist state
+machine should integrate this behavior later, after the arm pose is smooth.
 
 Off-gantry testing should use lower speed limits than gantry testing, a clear
 area, and an active emergency stop. Keep reverse disabled until forward

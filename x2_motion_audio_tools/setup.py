@@ -41,6 +41,7 @@ setup(
             "x2_stereo_person_follow = x2_motion_audio_tools.x2_stereo_person_follow:main",
             "x2_forward_back_raise_arms = x2_motion_audio_tools.x2_forward_back_raise_arms:main",
             "x2_forward_backward_steps = x2_motion_audio_tools.x2_forward_backward_steps:main",
+            "x2_arm_assist_pose = x2_motion_audio_tools.x2_arm_assist_pose:main",
         ],
     },
 )

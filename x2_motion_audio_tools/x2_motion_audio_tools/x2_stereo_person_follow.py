@@ -113,6 +113,7 @@ class X2StereoPersonFollow(Node):
         self.declare_parameter("control_rate_hz", 20.0)
         self.declare_parameter("reverse_enabled", False)
         self.declare_parameter("invert_angular", False)
+        self.declare_parameter("hold_base_in_stop_band", True)
         self.declare_parameter("require_waist_neutral_for_forward", False)
         self.declare_parameter("waist_neutral_limit_deg", 5.0)
         self.declare_parameter("waist_state_timeout_sec", 0.5)
@@ -150,6 +151,9 @@ class X2StereoPersonFollow(Node):
         self.control_period_sec = 1.0 / max(control_rate_hz, 0.1)
         self.reverse_enabled = bool_param(self.get_parameter("reverse_enabled").value)
         self.invert_angular = bool_param(self.get_parameter("invert_angular").value)
+        self.hold_base_in_stop_band = bool_param(
+            self.get_parameter("hold_base_in_stop_band").value
+        )
         self.require_waist_neutral_for_forward = bool_param(
             self.get_parameter("require_waist_neutral_for_forward").value
         )
@@ -405,8 +409,9 @@ class X2StereoPersonFollow(Node):
         if not self.enabled:
             return
 
+        self.log_throttled(reason, forward, angular)
+
         if self.dry_run:
-            self.log_throttled(reason, forward, angular)
             return
 
         self.publish_velocity(forward, angular)
@@ -435,6 +440,8 @@ class X2StereoPersonFollow(Node):
             return 0.0, angular, "ALIGN"
 
         if self.stop_min_m <= z_m <= self.stop_max_m:
+            if self.hold_base_in_stop_band:
+                return 0.0, 0.0, "STOP_BAND"
             return 0.0, angular, "STOP_BAND"
 
         if z_m > self.stop_max_m:
@@ -457,6 +464,8 @@ class X2StereoPersonFollow(Node):
             reverse = -self.apply_min_velocity(abs(reverse), self.min_forward_speed)
             return reverse, angular, "REVERSE"
 
+        if self.hold_base_in_stop_band:
+            return 0.0, 0.0, "TOO_CLOSE"
         return 0.0, angular, "TOO_CLOSE"
 
     def angular_velocity_for_bearing(self, bearing_rad: float) -> float:
@@ -488,7 +497,7 @@ class X2StereoPersonFollow(Node):
         return max(value, min_abs)
 
     def publish_velocity(self, forward_velocity: float, angular_velocity: float) -> None:
-        if self.velocity_pub is None:
+        if self.velocity_pub is None or not rclpy.ok():
             return
 
         msg = McLocomotionVelocity()
@@ -498,7 +507,11 @@ class X2StereoPersonFollow(Node):
         msg.forward_velocity = float(forward_velocity)
         msg.lateral_velocity = 0.0
         msg.angular_velocity = float(angular_velocity)
-        self.velocity_pub.publish(msg)
+        try:
+            self.velocity_pub.publish(msg)
+        except Exception as exc:
+            if rclpy.ok():
+                self.get_logger().warn(f"Failed to publish velocity: {exc}")
 
     def publish_stop(self) -> None:
         now = time.monotonic()
@@ -513,9 +526,20 @@ class X2StereoPersonFollow(Node):
         if now - self.last_log_time < 1.0:
             return
         self.last_log_time = now
+        target_text = "target=none"
+        if self.target is not None:
+            age_sec = now - self.target.stamp_sec
+            if self.target.z_m != 0.0:
+                bearing_deg = math.degrees(math.atan2(self.target.x_m, self.target.z_m))
+            else:
+                bearing_deg = 0.0
+            target_text = (
+                f"x={self.target.x_m:.2f}m, z={self.target.z_m:.2f}m, "
+                f"bearing={bearing_deg:.1f}deg, age={age_sec:.2f}s"
+            )
         self.get_logger().info(
             f"follow={reason}: forward={forward:.3f}m/s, "
-            f"angular={angular:.3f}rad/s"
+            f"angular={angular:.3f}rad/s, {target_text}"
         )
 
     def stop(self) -> None:
@@ -548,7 +572,8 @@ def main(args=None) -> None:
     try:
         executor.spin()
     finally:
-        node.stop()
+        if rclpy.ok():
+            node.stop()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
