@@ -68,17 +68,17 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "input_size",
-                default_value="416",
+                default_value="320",
                 description="YOLO model input image size",
             ),
             DeclareLaunchArgument(
                 "processing_width",
-                default_value="640",
+                default_value="512",
                 description="Working image width for YOLO/depth; 0 keeps source size",
             ),
             DeclareLaunchArgument(
                 "max_processing_fps",
-                default_value="5.0",
+                default_value="6.0",
                 description="Maximum processing rate; latest frames replace queued frames",
             ),
             DeclareLaunchArgument(

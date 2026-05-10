@@ -43,6 +43,9 @@ CAMERA_INFO_QOS = QoSProfile(
 )
 
 DEFAULT_BASELINE_M = 0.0578
+DEFAULT_FOCAL_PX = 695.7059016837189
+DEFAULT_CX = 1027.041296886738
+DEFAULT_CY = 776.242452818167
 
 
 @dataclass
@@ -85,9 +88,9 @@ class StereoFinalAnnotatorNode(Node):
         self.declare_parameter("confidence_threshold", 0.5)
         self.declare_parameter("nms_threshold", 0.45)
         self.declare_parameter("device", "cpu")
-        self.declare_parameter("input_size", 416)
-        self.declare_parameter("processing_width", 640)
-        self.declare_parameter("max_processing_fps", 5.0)
+        self.declare_parameter("input_size", 320)
+        self.declare_parameter("processing_width", 512)
+        self.declare_parameter("max_processing_fps", 6.0)
         self.declare_parameter("baseline_m", DEFAULT_BASELINE_M)
         self.declare_parameter("sync_slop_sec", 0.10)
         self.declare_parameter("right_buffer_size", 20)
@@ -543,21 +546,21 @@ class StereoFinalAnnotatorNode(Node):
             return float(self.left_info.p[0])
         if self.left_info is not None and self.left_info.k[0] > 0:
             return float(self.left_info.k[0])
-        return 0.0
+        return DEFAULT_FOCAL_PX
 
     def _cx(self) -> float:
         if self.left_info is not None and self.left_info.p[2] > 0:
             return float(self.left_info.p[2])
         if self.left_info is not None and self.left_info.k[2] > 0:
             return float(self.left_info.k[2])
-        return 0.0
+        return DEFAULT_CX
 
     def _cy(self) -> float:
         if self.left_info is not None and self.left_info.p[6] > 0:
             return float(self.left_info.p[6])
         if self.left_info is not None and self.left_info.k[5] > 0:
             return float(self.left_info.k[5])
-        return 0.0
+        return DEFAULT_CY
 
     def _baseline(self) -> float:
         if self.baseline_m > 0.0:
