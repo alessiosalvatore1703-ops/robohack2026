@@ -18,7 +18,7 @@ class FinalStereoViewer(Node):
         self.declare_parameter(
             "image_topic", "/stereo_person/final_annotated_image/compressed"
         )
-        self.declare_parameter("scale", 0.5)
+        self.declare_parameter("scale", 1.0)
 
         self.image_topic = self.get_parameter("image_topic").value
         self.scale = max(0.05, float(self.get_parameter("scale").value))
@@ -35,6 +35,7 @@ class FinalStereoViewer(Node):
 
         self.get_logger().info("Final stereo viewer started")
         self.get_logger().info(f"Image: {self.image_topic}")
+        cv2.namedWindow("Final stereo annotation", cv2.WINDOW_NORMAL)
 
     def _image_callback(self, msg: CompressedImage):
         try:

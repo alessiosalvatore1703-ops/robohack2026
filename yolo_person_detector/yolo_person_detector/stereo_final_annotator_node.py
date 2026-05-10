@@ -42,6 +42,8 @@ CAMERA_INFO_QOS = QoSProfile(
     durability=DurabilityPolicy.VOLATILE,
 )
 
+DEFAULT_BASELINE_M = 0.0578
+
 
 @dataclass
 class DepthEstimate:
@@ -86,7 +88,7 @@ class StereoFinalAnnotatorNode(Node):
         self.declare_parameter("input_size", 416)
         self.declare_parameter("processing_width", 640)
         self.declare_parameter("max_processing_fps", 5.0)
-        self.declare_parameter("baseline_m", 0.0)
+        self.declare_parameter("baseline_m", DEFAULT_BASELINE_M)
         self.declare_parameter("sync_slop_sec", 0.10)
         self.declare_parameter("right_buffer_size", 20)
         self.declare_parameter("min_depth_m", 0.3)
@@ -205,6 +207,7 @@ class StereoFinalAnnotatorNode(Node):
         if right is not None and detections:
             right_proc = self._resize_like(right, left_proc)
             depths = self._estimate_depths(left_proc, right_proc, detections, scale)
+        detections, depths = self._select_closest_detection(detections, depths)
 
         annotated = self._annotate(
             left, detections, depths, result.inference_time_ms
@@ -221,7 +224,7 @@ class StereoFinalAnnotatorNode(Node):
         self.frame_count += 1
         if self.frame_count % 30 == 0:
             self.get_logger().info(
-                f"Frame {self.frame_count}: {len(detections)} person(s), "
+                f"Frame {self.frame_count}: closest of {len(result.detections)} person(s), "
                 f"{len(depths)} depth label(s), {result.inference_time_ms:.1f} ms"
             )
 
@@ -308,6 +311,22 @@ class StereoFinalAnnotatorNode(Node):
             )
         return scaled
 
+    def _select_closest_detection(self, detections, depths):
+        if not detections:
+            return [], {}
+        if depths:
+            selected_idx = min(depths, key=lambda idx: depths[idx].z_m)
+        else:
+            selected_idx = max(
+                range(len(detections)),
+                key=lambda idx: detections[idx].bbox_w * detections[idx].bbox_h,
+            )
+
+        selected_depths = {}
+        if selected_idx in depths:
+            selected_depths[0] = depths[selected_idx]
+        return [detections[selected_idx]], selected_depths
+
     def _estimate_depths(self, left, right, detections, processing_scale: float):
         left_rect, right_rect = self._rectify_if_possible(left, right, processing_scale)
         if left_rect.shape[:2] != right_rect.shape[:2]:
@@ -319,11 +338,13 @@ class StereoFinalAnnotatorNode(Node):
 
         fx = self._fx() * processing_scale
         baseline = self._baseline()
-        if fx <= 0.0 or baseline <= 0.0:
+        if fx <= 0.0:
             self.get_logger().warn(
-                "No usable stereo baseline. Set baseline_m or provide calibrated CameraInfo.",
+                "No usable left CameraInfo yet; skipping stereo depth.",
                 throttle_duration_sec=3.0,
             )
+            return {}
+        if baseline <= 0.0:
             return {}
 
         gray_left = cv2.cvtColor(left_rect, cv2.COLOR_BGR2GRAY)
@@ -545,7 +566,7 @@ class StereoFinalAnnotatorNode(Node):
             baseline = abs(float(self.right_info.p[3]) / float(self.right_info.p[0]))
             if baseline > 0.0:
                 return baseline
-        return 0.0
+        return DEFAULT_BASELINE_M
 
     def _create_stereo_matcher(self):
         num_disparities = int(self.get_parameter("stereo_num_disparities").value)

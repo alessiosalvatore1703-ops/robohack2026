@@ -88,8 +88,8 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "baseline_m",
-                default_value="0.0",
-                description="Manual stereo baseline in meters if CameraInfo lacks Tx",
+                default_value="0.0578",
+                description="Stereo baseline in meters; default measured from CameraInfo",
             ),
             DeclareLaunchArgument(
                 "sync_slop_sec",
