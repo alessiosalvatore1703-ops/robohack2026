@@ -171,7 +171,8 @@ ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
   follow_stop_max_m:=1.0 \
   follow_target_distance_m:=0.85 \
   depth_disparity_percentile:=75.0 \
-  assist_arm_pose_enabled:=true
+  assist_arm_pose_enabled:=true \
+  assist_head_pat_enabled:=true
 ```
 
 Once the manual `SD` sequence is trusted, the launch can request Stable Stand
@@ -191,7 +192,8 @@ ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
   follow_stop_max_m:=1.0 \
   follow_target_distance_m:=0.85 \
   depth_disparity_percentile:=75.0 \
-  assist_arm_pose_enabled:=true
+  assist_arm_pose_enabled:=true \
+  assist_head_pat_enabled:=true
 ```
 
 The stereo walking supervisor publishes high-level
@@ -204,8 +206,10 @@ stop band; the head can keep tracking without stepping in place.
 
 When `assist_arm_pose_enabled:=true`, the launch also starts
 `x2_raise_arms_pose` in trigger mode. The follow supervisor publishes one
-arm-pose trigger the first time it reaches `STOP_BAND` or `TOO_CLOSE`; later
-stops do not re-trigger the arm pose.
+arm-pose trigger the first time it reaches `STOP_BAND` or `TOO_CLOSE`. With
+`assist_head_pat_enabled:=true`, it then waits in place until a Bool true is
+received on `/x2/assist/head_pat`; that releases the arm hold and resumes
+normal following. Later stops do not re-trigger the arm pose.
 
 The old waist tracking tools are still available as proof-of-concept utilities,
 but do not run them during the `SD` walking demo.

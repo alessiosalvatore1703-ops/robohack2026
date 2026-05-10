@@ -114,7 +114,8 @@ ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
   follow_stop_max_m:=1.0 \
   follow_target_distance_m:=0.85 \
   depth_disparity_percentile:=75.0 \
-  assist_arm_pose_enabled:=true
+  assist_arm_pose_enabled:=true \
+  assist_head_pat_enabled:=true
 ```
 
 For a more automated demo, the follow supervisor can request Stable Stand during
@@ -134,7 +135,8 @@ ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
   follow_stop_max_m:=1.0 \
   follow_target_distance_m:=0.85 \
   depth_disparity_percentile:=75.0 \
-  assist_arm_pose_enabled:=true
+  assist_arm_pose_enabled:=true \
+  assist_head_pat_enabled:=true
 ```
 
 Runtime enable and disable:
@@ -174,11 +176,17 @@ ros2 launch x2_motion_audio_tools x2_raise_arms_pose.launch.py \
 ```
 
 For the integrated chair-assist demo, launch with
-`assist_arm_pose_enabled:=true`. The follow supervisor publishes one arm-pose
-trigger the first time it reaches `STOP_BAND` or `TOO_CLOSE`; if it stops again
-later, it only stands still. The arm pose is held indefinitely by default until
-the node is stopped or a future state publishes `data: false` to
-`/x2/assist/raise_arms_trigger`.
+`assist_arm_pose_enabled:=true assist_head_pat_enabled:=true`. The follow
+supervisor publishes one arm-pose trigger the first time it reaches `STOP_BAND`
+or `TOO_CLOSE`, then waits in place for a Bool true on `/x2/assist/head_pat`.
+That reset publishes `data: false` to `/x2/assist/raise_arms_trigger` and
+resumes normal following. If it stops again later, it only stands still.
+
+Manual head-pat simulation:
+
+```bash
+ros2 topic pub -1 /x2/assist/head_pat std_msgs/Bool "data: true"
+```
 
 The arm-only script publishes full-group HAL arm commands only. It does not
 publish locomotion velocity and does not command waist or torso joints. The

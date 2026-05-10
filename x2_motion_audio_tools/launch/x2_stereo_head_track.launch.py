@@ -82,6 +82,8 @@ def generate_launch_description():
     assist_arm_hold_indefinitely = LaunchConfiguration(
         "assist_arm_hold_indefinitely"
     )
+    assist_head_pat_enabled = LaunchConfiguration("assist_head_pat_enabled")
+    assist_head_pat_topic = LaunchConfiguration("assist_head_pat_topic")
 
     return LaunchDescription(
         [
@@ -386,6 +388,19 @@ def generate_launch_description():
                 default_value="true",
                 description="Keep publishing the assist arm pose after reaching it.",
             ),
+            DeclareLaunchArgument(
+                "assist_head_pat_enabled",
+                default_value="false",
+                description=(
+                    "When true, first arrival waits for a head-pat Bool event "
+                    "before resuming follow."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "assist_head_pat_topic",
+                default_value="/x2/assist/head_pat",
+                description="Bool topic used as the head-pat reset input.",
+            ),
             Node(
                 package="yolo_person_detector",
                 executable="stereo_final_annotator_node",
@@ -516,6 +531,10 @@ def generate_launch_description():
                         "arm_pose_trigger_duration_sec": ParameterValue(
                             assist_arm_pose_trigger_duration_sec, value_type=float
                         ),
+                        "assist_head_pat_enabled": ParameterValue(
+                            assist_head_pat_enabled, value_type=bool
+                        ),
+                        "assist_head_pat_topic": assist_head_pat_topic,
                         "target_timeout_sec": ParameterValue(
                             target_timeout_sec, value_type=float
                         ),

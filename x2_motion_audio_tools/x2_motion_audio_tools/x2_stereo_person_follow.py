@@ -119,6 +119,8 @@ class X2StereoPersonFollow(Node):
             "arm_pose_trigger_topic", "/x2/assist/raise_arms_trigger"
         )
         self.declare_parameter("arm_pose_trigger_duration_sec", 2.0)
+        self.declare_parameter("assist_head_pat_enabled", False)
+        self.declare_parameter("assist_head_pat_topic", "/x2/assist/head_pat")
         self.declare_parameter("require_waist_neutral_for_forward", False)
         self.declare_parameter("waist_neutral_limit_deg", 5.0)
         self.declare_parameter("waist_state_timeout_sec", 0.5)
@@ -168,6 +170,12 @@ class X2StereoPersonFollow(Node):
         self.arm_pose_trigger_duration_sec = float(
             self.get_parameter("arm_pose_trigger_duration_sec").value
         )
+        self.assist_head_pat_enabled = bool_param(
+            self.get_parameter("assist_head_pat_enabled").value
+        )
+        self.assist_head_pat_topic = str(
+            self.get_parameter("assist_head_pat_topic").value
+        )
         self.require_waist_neutral_for_forward = bool_param(
             self.get_parameter("require_waist_neutral_for_forward").value
         )
@@ -187,7 +195,10 @@ class X2StereoPersonFollow(Node):
         self.last_log_time = 0.0
         self.last_stop_publish_time = 0.0
         self.arm_pose_triggered = False
+        self.arms_used_once = False
+        self.waiting_for_head_pat = False
         self.arm_pose_trigger_active_until = 0.0
+        self.arm_pose_release_active_until = 0.0
 
         if not AIMDK_AVAILABLE and not self.dry_run:
             self.get_logger().fatal(
@@ -239,6 +250,13 @@ class X2StereoPersonFollow(Node):
             RELIABLE_QOS,
             callback_group=self.cb_group,
         )
+        self.create_subscription(
+            Bool,
+            self.assist_head_pat_topic,
+            self.head_pat_callback,
+            RELIABLE_QOS,
+            callback_group=self.cb_group,
+        )
         self.arm_pose_trigger_pub = self.create_publisher(
             Bool,
             self.arm_pose_trigger_topic,
@@ -255,6 +273,7 @@ class X2StereoPersonFollow(Node):
             f"enabled={self.enabled}, dry_run={self.dry_run}, "
             f"auto_enable_stable_stand={self.auto_enable_stable_stand}, "
             f"require_waist_neutral={self.require_waist_neutral_for_forward}, "
+            f"assist_head_pat={self.assist_head_pat_enabled}, "
             f"target_topic={self.target_topic}, stop_band=[{self.stop_min_m:.2f}, "
             f"{self.stop_max_m:.2f}]m, max_v={self.max_forward_speed:.2f}m/s, "
             f"max_w={self.max_angular_speed:.2f}rad/s"
@@ -280,6 +299,24 @@ class X2StereoPersonFollow(Node):
             self.enabled = False
             self.get_logger().info("Follow disabled; publishing stop.")
             self.publish_stop()
+
+    def head_pat_callback(self, msg: Bool) -> None:
+        if not msg.data or not self.assist_head_pat_enabled:
+            return
+
+        if not self.waiting_for_head_pat:
+            self.get_logger().info("Head-pat event received outside wait state; ignoring.")
+            return
+
+        self.waiting_for_head_pat = False
+        self.arms_used_once = True
+        self.arm_pose_trigger_active_until = 0.0
+        self.arm_pose_release_active_until = (
+            time.monotonic() + max(0.1, self.arm_pose_trigger_duration_sec)
+        )
+        self.get_logger().info(
+            "Head-pat reset received; releasing arm hold and resuming follow."
+        )
 
     def spawn_activation(self) -> None:
         with self.activation_lock:
@@ -430,13 +467,16 @@ class X2StereoPersonFollow(Node):
         if not self.enabled:
             return
 
+        if self.waiting_for_head_pat:
+            forward, angular, reason = 0.0, 0.0, "WAIT_FOR_HEAD_PAT"
+
         self.log_throttled(reason, forward, angular)
 
         if self.dry_run:
             return
 
         self.publish_velocity(forward, angular)
-        self.maybe_trigger_arm_pose(reason)
+        self.update_assist_state(reason)
 
     def compute_velocity(self) -> tuple[float, float, str]:
         now = time.monotonic()
@@ -535,13 +575,65 @@ class X2StereoPersonFollow(Node):
             if rclpy.ok():
                 self.get_logger().warn(f"Failed to publish velocity: {exc}")
 
+    def update_assist_state(self, reason: str) -> None:
+        self.publish_pending_arm_release()
+
+        if self.waiting_for_head_pat:
+            return
+
+        if reason not in {"STOP_BAND", "TOO_CLOSE"}:
+            return
+
+        if not self.assist_head_pat_enabled:
+            self.maybe_trigger_arm_pose(reason)
+            return
+
+        if self.arms_used_once:
+            return
+
+        self.waiting_for_head_pat = True
+        self.arms_used_once = True
+        self.get_logger().info(
+            "Arrived at person; entering WAIT_FOR_HEAD_PAT state."
+        )
+        self.start_arm_pose_trigger()
+
+    def start_arm_pose_trigger(self) -> None:
+        if not self.arm_pose_trigger_enabled:
+            return
+
+        now = time.monotonic()
+        self.arm_pose_triggered = True
+        self.arm_pose_trigger_active_until = (
+            now + max(0.1, self.arm_pose_trigger_duration_sec)
+        )
+        self.get_logger().info(
+            f"Starting one-shot arm pose trigger on {self.arm_pose_trigger_topic}"
+        )
+        self.publish_arm_pose_trigger(True)
+
+    def publish_pending_arm_release(self) -> None:
+        now = time.monotonic()
+        if self.arm_pose_release_active_until > now:
+            self.publish_arm_pose_trigger(False)
+
+        if self.arm_pose_trigger_active_until <= now:
+            return
+        self.publish_arm_pose_trigger(True)
+
+    def publish_arm_pose_trigger(self, active: bool) -> None:
+        msg = Bool()
+        msg.data = active
+        self.arm_pose_trigger_pub.publish(msg)
+
     def maybe_trigger_arm_pose(self, reason: str) -> None:
+        """Compatibility shim for older tests; use update_assist_state."""
         if not self.arm_pose_trigger_enabled or self.dry_run:
             return
 
         now = time.monotonic()
         if self.arm_pose_trigger_active_until > now:
-            self.publish_arm_pose_trigger()
+            self.publish_arm_pose_trigger(True)
             return
 
         if self.arm_pose_triggered or reason not in {"STOP_BAND", "TOO_CLOSE"}:
@@ -554,12 +646,7 @@ class X2StereoPersonFollow(Node):
         self.get_logger().info(
             f"Starting one-shot arm pose trigger on {self.arm_pose_trigger_topic}"
         )
-        self.publish_arm_pose_trigger()
-
-    def publish_arm_pose_trigger(self) -> None:
-        msg = Bool()
-        msg.data = True
-        self.arm_pose_trigger_pub.publish(msg)
+        self.publish_arm_pose_trigger(True)
 
     def publish_stop(self) -> None:
         now = time.monotonic()
