@@ -16,8 +16,12 @@ def generate_launch_description():
     model = LaunchConfiguration("model")
     confidence = LaunchConfiguration("confidence")
     input_size = LaunchConfiguration("input_size")
+    processing_width = LaunchConfiguration("processing_width")
+    max_processing_fps = LaunchConfiguration("max_processing_fps")
+    output_width = LaunchConfiguration("output_width")
     baseline_m = LaunchConfiguration("baseline_m")
     sync_slop_sec = LaunchConfiguration("sync_slop_sec")
+    right_buffer_size = LaunchConfiguration("right_buffer_size")
     jpeg_quality = LaunchConfiguration("jpeg_quality")
 
     return LaunchDescription(
@@ -64,8 +68,23 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "input_size",
-                default_value="640",
+                default_value="416",
                 description="YOLO model input image size",
+            ),
+            DeclareLaunchArgument(
+                "processing_width",
+                default_value="640",
+                description="Working image width for YOLO/depth; 0 keeps source size",
+            ),
+            DeclareLaunchArgument(
+                "max_processing_fps",
+                default_value="5.0",
+                description="Maximum processing rate; latest frames replace queued frames",
+            ),
+            DeclareLaunchArgument(
+                "output_width",
+                default_value="960",
+                description="Final JPEG width; 0 publishes full source size",
             ),
             DeclareLaunchArgument(
                 "baseline_m",
@@ -74,12 +93,17 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "sync_slop_sec",
-                default_value="0.05",
+                default_value="0.10",
                 description="Maximum timestamp difference between left and right frames",
             ),
             DeclareLaunchArgument(
+                "right_buffer_size",
+                default_value="20",
+                description="Number of recent right frames available for sync matching",
+            ),
+            DeclareLaunchArgument(
                 "jpeg_quality",
-                default_value="85",
+                default_value="75",
                 description="JPEG quality for annotated compressed outputs",
             ),
             Node(
@@ -98,8 +122,12 @@ def generate_launch_description():
                         "model_path": model,
                         "confidence_threshold": confidence,
                         "input_size": input_size,
+                        "processing_width": processing_width,
+                        "max_processing_fps": max_processing_fps,
+                        "output_width": output_width,
                         "baseline_m": baseline_m,
                         "sync_slop_sec": sync_slop_sec,
+                        "right_buffer_size": right_buffer_size,
                         "jpeg_quality": jpeg_quality,
                     }
                 ],
