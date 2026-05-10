@@ -3,16 +3,16 @@ Launch file for YOLO Detection + Person Follower on Agibot X2.
 
 Runs the full pipeline: camera selector -> YOLO detector -> person follower.
 The follower is DISABLED by default for safety. Enable it with follower_enabled:=true
-only when the robot is in LOCOMOTION_DEFAULT mode.
+only when the robot is in Stable Stand.
 
 Usage (detection only, robot does not move):
     ros2 launch yolo_person_detector yolo_follower.launch.py
 
 Usage (detection + active following — robot will move):
-    # The follower will transition the robot to LOCOMOTION_DEFAULT itself
-    # (DAMPING -> JOINT -> LOCOMOTION) via SetMcAction. If you prefer to do
+    # The follower will transition the robot to STAND_DEFAULT itself
+    # (DAMPING -> JOINT -> STAND) via SetMcAction. If you prefer to do
     # that manually, set auto_enable_locomotion:=false and run:
-    #     ros2 run py_examples set_mc_action LD
+    #     ros2 run py_examples set_mc_action SD
     ros2 launch yolo_person_detector yolo_follower.launch.py follower_enabled:=true
 """
 

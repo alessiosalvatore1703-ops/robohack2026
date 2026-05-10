@@ -67,13 +67,13 @@ RELIABLE_QOS = QoSProfile(
     durability=DurabilityPolicy.VOLATILE,
 )
 
-# Ordered path up the X2 motion-mode state machine toward LOCOMOTION.
+# Ordered path up the X2 motion-mode state machine toward Stable Stand.
 # Each step is a legal one-step transition; rejections on states we are
 # already past are expected and non-fatal.
-LOCOMOTION_STATE_SEQUENCE = (
+STABLE_STAND_STATE_SEQUENCE = (
     'DAMPING_DEFAULT',
     'JOINT_DEFAULT',
-    'LOCOMOTION_DEFAULT',
+    'STAND_DEFAULT',
 )
 
 
@@ -222,20 +222,20 @@ class PersonFollowerNode(Node):
         threading.Thread(target=self._activate_follower, daemon=True).start()
 
     def _activate_follower(self) -> None:
-        """Put the robot in LOCOMOTION and register as a velocity source."""
+        """Put the robot in Stable Stand and register as a velocity source."""
         try:
             if self._auto_enable_locomotion:
-                if not self._ensure_locomotion_mode():
+                if not self._ensure_stable_stand_mode():
                     self.get_logger().error(
-                        'Could not transition robot to LOCOMOTION_DEFAULT. '
+                        'Could not transition robot to STAND_DEFAULT. '
                         'Put it there manually with '
-                        '`ros2 run py_examples set_mc_action LD`.'
+                        '`ros2 run py_examples set_mc_action SD`.'
                     )
                     return
             else:
                 self.get_logger().warn(
                     'auto_enable_locomotion=false. Make sure the robot is in '
-                    'LOCOMOTION_DEFAULT or STAND_DEFAULT before expecting motion.'
+                    'STAND_DEFAULT before expecting motion.'
                 )
 
             if not self._registered_input_source:
@@ -253,25 +253,25 @@ class PersonFollowerNode(Node):
     # Motion-mode state machine                                           #
     # ------------------------------------------------------------------ #
 
-    def _ensure_locomotion_mode(self) -> bool:
-        """Walk the X2 state diagram until we reach LOCOMOTION_DEFAULT.
+    def _ensure_stable_stand_mode(self) -> bool:
+        """Walk the X2 state diagram until we reach STAND_DEFAULT.
 
         Strategy:
-          1. Try the nearest target (LOCOMOTION_DEFAULT) directly. If we were
-             already in STAND/LOCOMOTION or JOINT, this single call wins.
-          2. Otherwise walk DD -> JD -> LD; rejections on states we're already
+          1. Try STAND_DEFAULT directly. If we were already in STAND/LOCOMOTION
+             or JOINT, this single call should win.
+          2. Otherwise walk DD -> JD -> SD; rejections on states we're already
              past are logged at WARN and ignored.
-          3. Confirm with a final LOCOMOTION_DEFAULT request.
+          3. Confirm with a final STAND_DEFAULT request.
         """
-        self.get_logger().info('Requesting LOCOMOTION_DEFAULT directly...')
-        if self._send_mc_action('LOCOMOTION_DEFAULT'):
+        self.get_logger().info('Requesting STAND_DEFAULT directly...')
+        if self._send_mc_action('STAND_DEFAULT'):
             return True
 
         self.get_logger().info(
             'Direct transition rejected, walking state machine: '
-            'DAMPING_DEFAULT -> JOINT_DEFAULT -> LOCOMOTION_DEFAULT'
+            'DAMPING_DEFAULT -> JOINT_DEFAULT -> STAND_DEFAULT'
         )
-        for action in LOCOMOTION_STATE_SEQUENCE:
+        for action in STABLE_STAND_STATE_SEQUENCE:
             ok = self._send_mc_action(action)
             if ok:
                 self.get_logger().info(f'Transitioned to {action}')
@@ -282,9 +282,9 @@ class PersonFollowerNode(Node):
             # Give the robot time to settle between stages.
             time.sleep(0.8)
 
-        # Final confirmation. If the robot is now in LD this is a no-op and
+        # Final confirmation. If the robot is now in SD this is a no-op and
         # the service should return success.
-        return self._send_mc_action('LOCOMOTION_DEFAULT')
+        return self._send_mc_action('STAND_DEFAULT')
 
     def _send_mc_action(self, action_name: str) -> bool:
         """Invoke SetMcAction; True iff the controller reports SUCCESS."""

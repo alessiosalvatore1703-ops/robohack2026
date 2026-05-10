@@ -57,9 +57,9 @@ person_follower:
     enabled: false
 
     # When true, the follower walks the X2 motion-mode state machine itself
-    # (DD -> JD -> LD) via SetMcAction before it starts publishing velocity.
-    # Set to false if another tool (e.g. `ros2 run py_examples set_mc_action LD`)
-    # is already responsible for putting the robot in LOCOMOTION_DEFAULT.
+    # (DD -> JD -> SD) via SetMcAction before it starts publishing velocity.
+    # Set to false if another tool (e.g. `ros2 run py_examples set_mc_action SD`)
+    # is already responsible for putting the robot in Stable Stand.
     auto_enable_locomotion: true
 
     # Control gains (visual servoing, no depth required)

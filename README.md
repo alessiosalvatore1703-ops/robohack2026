@@ -206,7 +206,7 @@ gantry/off-gantry workflow.
 
 ```bash
 # Launch with following enabled — the node will put the robot into
-# LOCOMOTION_DEFAULT itself (DD -> JD -> LD via SetMcAction).
+# STAND_DEFAULT itself (DD -> JD -> SD via SetMcAction).
 ros2 launch yolo_person_detector yolo_follower.launch.py \
     follower_enabled:=true \
     device:=cuda
@@ -221,7 +221,7 @@ ros2 topic pub -1 /yolo/follower/enable std_msgs/Bool "data: false"
 ```
 
 If you prefer to drive the motion-mode state machine yourself (e.g. with
-`ros2 run py_examples set_mc_action LD`), set `auto_enable_locomotion: false`
+`ros2 run py_examples set_mc_action SD`), set `auto_enable_locomotion: false`
 in `config/yolo_params.yaml` so the node won't issue `SetMcAction` calls.
 
 Stop with `Ctrl+C` — watchdog zeros velocity within 50ms.
@@ -296,7 +296,7 @@ pip3 install --user "numpy<2"
 ```
 
 **Robot doesn't move with `follower_enabled:=true`**
-Set locomotion mode first: `ros2 run py_examples set_mc_action LD`. Also check the log for `Input source registered as "person_follower"`.
+Set Stable Stand first: `ros2 run py_examples set_mc_action SD`. Also check the log for `Input source registered as "person_follower"`.
 
 **Detection slow (>100ms per frame)**
 Use `device:=cuda` if the robot has a GPU. Check frame rate: `ros2 topic hz /yolo/detections`.

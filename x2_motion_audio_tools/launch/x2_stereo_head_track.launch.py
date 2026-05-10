@@ -57,6 +57,9 @@ def generate_launch_description():
     waist_soft_limit_deg = LaunchConfiguration("waist_soft_limit_deg")
     follow_enabled = LaunchConfiguration("follow_enabled")
     follow_dry_run = LaunchConfiguration("follow_dry_run")
+    follow_auto_enable_stable_stand = LaunchConfiguration(
+        "follow_auto_enable_stable_stand"
+    )
     follow_auto_enable_locomotion = LaunchConfiguration("follow_auto_enable_locomotion")
     follow_target_distance_m = LaunchConfiguration("follow_target_distance_m")
     follow_stop_min_m = LaunchConfiguration("follow_stop_min_m")
@@ -320,9 +323,16 @@ def generate_launch_description():
                 description="When true, log computed walking commands without publishing.",
             ),
             DeclareLaunchArgument(
+                "follow_auto_enable_stable_stand",
+                default_value="false",
+                description="When true, request STAND_DEFAULT before publishing.",
+            ),
+            DeclareLaunchArgument(
                 "follow_auto_enable_locomotion",
                 default_value="false",
-                description="When true, request LOCOMOTION_DEFAULT before publishing.",
+                description=(
+                    "Deprecated alias for follow_auto_enable_stable_stand."
+                ),
             ),
             DeclareLaunchArgument(
                 "follow_target_distance_m",
@@ -514,6 +524,9 @@ def generate_launch_description():
                         "waist_state_topic": waist_state_topic,
                         "enabled": ParameterValue(follow_enabled, value_type=bool),
                         "dry_run": ParameterValue(follow_dry_run, value_type=bool),
+                        "auto_enable_stable_stand": ParameterValue(
+                            follow_auto_enable_stable_stand, value_type=bool
+                        ),
                         "auto_enable_locomotion": ParameterValue(
                             follow_auto_enable_locomotion, value_type=bool
                         ),

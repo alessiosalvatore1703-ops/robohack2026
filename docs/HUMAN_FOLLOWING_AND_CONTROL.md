@@ -111,17 +111,30 @@ ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
   follow_dry_run:=true
 ```
 
-Gantry active follow. Put the robot in locomotion mode first and release the
+Gantry active follow. Put the robot in Stable Stand first and release the
 remote-controller channel if required by the platform workflow:
 
 ```bash
-ros2 run py_examples set_mc_action LD
+ros2 run py_examples set_mc_action SD
 aima em stop-app rc
 
 ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
   device:=cuda \
   follow_enabled:=true \
   follow_dry_run:=false \
+  follow_max_forward_speed:=0.10 \
+  follow_max_angular_speed:=0.20
+```
+
+For a more automated demo, the follow supervisor can request Stable Stand during
+activation:
+
+```bash
+ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
+  device:=cuda \
+  follow_enabled:=true \
+  follow_dry_run:=false \
+  follow_auto_enable_stable_stand:=true \
   follow_max_forward_speed:=0.10 \
   follow_max_angular_speed:=0.20
 ```

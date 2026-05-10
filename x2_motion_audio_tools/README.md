@@ -82,7 +82,7 @@ ros2 run x2_motion_audio_tools x2_go_to_offset_raise_arms --dry-run
 Run movement only first:
 
 ```bash
-ros2 run py_examples set_mc_action LD
+ros2 run py_examples set_mc_action SD
 ros2 run x2_motion_audio_tools x2_go_to_offset_raise_arms --skip-arms
 ```
 
@@ -166,13 +166,26 @@ ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
 Active gantry follow:
 
 ```bash
-ros2 run py_examples set_mc_action LD
+ros2 run py_examples set_mc_action SD
 aima em stop-app rc
 
 ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
   device:=cuda \
   follow_enabled:=true \
   follow_dry_run:=false \
+  follow_max_forward_speed:=0.10 \
+  follow_max_angular_speed:=0.20
+```
+
+Once the manual `SD` sequence is trusted, the launch can request Stable Stand
+for you:
+
+```bash
+ros2 launch x2_motion_audio_tools x2_stereo_head_track.launch.py \
+  device:=cuda \
+  follow_enabled:=true \
+  follow_dry_run:=false \
+  follow_auto_enable_stable_stand:=true \
   follow_max_forward_speed:=0.10 \
   follow_max_angular_speed:=0.20
 ```
@@ -207,11 +220,11 @@ logs camera/YOLO/LiDAR details, registers a locomotion input source, turns with
 the legs, walks toward the selected person, and stops about one meter away. It
 does not command the waist/torso joints by default.
 
-Before running, put the robot in stable standing/locomotion mode and release the
-remote-controller channel:
+Before running, put the robot in Stable Stand and release the remote-controller
+channel:
 
 ```bash
-ros2 run py_examples set_mc_action LD
+ros2 run py_examples set_mc_action SD
 aima em stop-app rc
 ```
 
@@ -302,14 +315,14 @@ docs/HUMAN_FOLLOWING_AND_CONTROL.md
 Forward/backward movement only:
 
 ```bash
-ros2 run py_examples set_mc_action LD
+ros2 run py_examples set_mc_action SD
 ros2 run x2_motion_audio_tools x2_forward_backward_steps
 ```
 
 Forward/backward movement followed by a cautious arm raise:
 
 ```bash
-ros2 run py_examples set_mc_action LD
+ros2 run py_examples set_mc_action SD
 ros2 run x2_motion_audio_tools x2_forward_back_raise_arms
 ```
 

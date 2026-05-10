@@ -56,10 +56,10 @@ RELIABLE_QOS = QoSProfile(
 
 SOURCE_NAME = "stereo_person_follow"
 WAIST_YAW_JOINT = "waist_yaw_joint"
-LOCOMOTION_STATE_SEQUENCE = (
+STABLE_STAND_STATE_SEQUENCE = (
     "DAMPING_DEFAULT",
     "JOINT_DEFAULT",
-    "LOCOMOTION_DEFAULT",
+    "STAND_DEFAULT",
 )
 
 
@@ -92,6 +92,7 @@ class X2StereoPersonFollow(Node):
         self.declare_parameter("waist_state_topic", "/aima/hal/joint/waist/state")
         self.declare_parameter("enabled", False)
         self.declare_parameter("dry_run", True)
+        self.declare_parameter("auto_enable_stable_stand", False)
         self.declare_parameter("auto_enable_locomotion", False)
         self.declare_parameter("source_name", SOURCE_NAME)
         self.declare_parameter("target_distance_m", 0.75)
@@ -120,7 +121,9 @@ class X2StereoPersonFollow(Node):
         self.waist_state_topic = str(self.get_parameter("waist_state_topic").value)
         self.enabled = bool_param(self.get_parameter("enabled").value)
         self.dry_run = bool_param(self.get_parameter("dry_run").value)
-        self.auto_enable_locomotion = bool_param(
+        self.auto_enable_stable_stand = bool_param(
+            self.get_parameter("auto_enable_stable_stand").value
+        ) or bool_param(
             self.get_parameter("auto_enable_locomotion").value
         )
         self.source_name = str(self.get_parameter("source_name").value)
@@ -224,7 +227,7 @@ class X2StereoPersonFollow(Node):
         self.get_logger().info(
             "Stereo person follow started: "
             f"enabled={self.enabled}, dry_run={self.dry_run}, "
-            f"auto_enable_locomotion={self.auto_enable_locomotion}, "
+            f"auto_enable_stable_stand={self.auto_enable_stable_stand}, "
             f"target_topic={self.target_topic}, stop_band=[{self.stop_min_m:.2f}, "
             f"{self.stop_max_m:.2f}]m, max_v={self.max_forward_speed:.2f}m/s, "
             f"max_w={self.max_angular_speed:.2f}rad/s"
@@ -264,17 +267,17 @@ class X2StereoPersonFollow(Node):
                 self.enabled = True
                 return
 
-            if self.auto_enable_locomotion:
-                if not self.ensure_locomotion_mode():
+            if self.auto_enable_stable_stand:
+                if not self.ensure_stable_stand_mode():
                     self.get_logger().error(
-                        "Could not enter LOCOMOTION_DEFAULT. Try "
-                        "`ros2 run py_examples set_mc_action LD` manually."
+                        "Could not enter STAND_DEFAULT. Try "
+                        "`ros2 run py_examples set_mc_action SD` manually."
                     )
                     return
             else:
                 self.get_logger().warn(
-                    "auto_enable_locomotion=false. Make sure the robot is in "
-                    "LOCOMOTION_DEFAULT or STAND_DEFAULT before enabling motion."
+                    "auto_enable_stable_stand=false. Make sure the robot is in "
+                    "STAND_DEFAULT before enabling walking commands."
                 )
 
             if not self.registered_input_source:
@@ -288,25 +291,25 @@ class X2StereoPersonFollow(Node):
             with self.activation_lock:
                 self.activation_in_progress = False
 
-    def ensure_locomotion_mode(self) -> bool:
-        self.get_logger().info("Requesting LOCOMOTION_DEFAULT directly...")
-        if self.send_mc_action("LOCOMOTION_DEFAULT"):
+    def ensure_stable_stand_mode(self) -> bool:
+        self.get_logger().info("Requesting STAND_DEFAULT directly...")
+        if self.send_mc_action("STAND_DEFAULT"):
             return True
 
         self.get_logger().info(
-            "Direct transition rejected; walking DD -> JD -> LD."
+            "Direct transition rejected; walking DD -> JD -> SD."
         )
-        for action in LOCOMOTION_STATE_SEQUENCE:
+        for action in STABLE_STAND_STATE_SEQUENCE:
             ok = self.send_mc_action(action)
             if ok:
                 self.get_logger().info(f"Transitioned to {action}")
             else:
                 self.get_logger().warn(
                     f"Transition to {action} rejected; continuing."
-                )
+            )
             time.sleep(0.8)
 
-        return self.send_mc_action("LOCOMOTION_DEFAULT")
+        return self.send_mc_action("STAND_DEFAULT")
 
     def send_mc_action(self, action_name: str) -> bool:
         if self.mc_action_client is None:
