@@ -75,6 +75,13 @@ def generate_launch_description():
     assist_arm_preset_motion_id = LaunchConfiguration(
         "assist_arm_preset_motion_id"
     )
+    announce_enabled = LaunchConfiguration("announce_enabled")
+    announce_startup_text = LaunchConfiguration("announce_startup_text")
+    announce_stop_text = LaunchConfiguration("announce_stop_text")
+    announce_startup_emoji_id = LaunchConfiguration(
+        "announce_startup_emoji_id"
+    )
+    announce_stop_emoji_id = LaunchConfiguration("announce_stop_emoji_id")
     assist_arm_pose_trigger_topic = LaunchConfiguration(
         "assist_arm_pose_trigger_topic"
     )
@@ -392,6 +399,42 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument(
+                "announce_enabled",
+                default_value="false",
+                description=(
+                    "When true, speak a short TTS line and play an emoji at "
+                    "follow activation and at first stop-band arrival. Any "
+                    "failure is logged and ignored; the follower keeps "
+                    "running."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "announce_startup_text",
+                default_value="I'm on my way",
+                description="TTS spoken when follow activation completes.",
+            ),
+            DeclareLaunchArgument(
+                "announce_stop_text",
+                default_value="Hold on",
+                description="TTS spoken on first stop-band arrival.",
+            ),
+            DeclareLaunchArgument(
+                "announce_startup_emoji_id",
+                default_value="90",
+                description=(
+                    "PlayEmoji.emotion_id for the startup announcement "
+                    "(90 = happy)."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "announce_stop_emoji_id",
+                default_value="200",
+                description=(
+                    "PlayEmoji.emotion_id for the stop announcement "
+                    "(200 = adore)."
+                ),
+            ),
+            DeclareLaunchArgument(
                 "assist_arm_pose_trigger_topic",
                 default_value="/x2/assist/raise_arms_trigger",
                 description="Bool topic used to trigger the assist arm pose.",
@@ -590,6 +633,17 @@ def generate_launch_description():
                         ),
                         "arm_pose_preset_motion_id": ParameterValue(
                             assist_arm_preset_motion_id, value_type=int
+                        ),
+                        "announce_enabled": ParameterValue(
+                            announce_enabled, value_type=bool
+                        ),
+                        "announce_startup_text": announce_startup_text,
+                        "announce_stop_text": announce_stop_text,
+                        "announce_startup_emoji_id": ParameterValue(
+                            announce_startup_emoji_id, value_type=int
+                        ),
+                        "announce_stop_emoji_id": ParameterValue(
+                            announce_stop_emoji_id, value_type=int
                         ),
                         "assist_wait_seconds": ParameterValue(
                             assist_wait_seconds, value_type=float

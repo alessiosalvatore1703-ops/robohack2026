@@ -41,6 +41,22 @@ try:
 except ImportError:
     AIMDK_AVAILABLE = False
 
+try:
+    from aimdk_msgs.srv import PlayTts
+
+    PLAYTTS_AVAILABLE = True
+except ImportError:
+    PLAYTTS_AVAILABLE = False
+    PlayTts = None
+
+try:
+    from aimdk_msgs.srv import PlayEmoji
+
+    PLAYEMOJI_AVAILABLE = True
+except ImportError:
+    PLAYEMOJI_AVAILABLE = False
+    PlayEmoji = None
+
 
 SENSOR_QOS = QoSProfile(
     reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -125,6 +141,15 @@ class X2StereoPersonFollow(Node):
         self.declare_parameter("arm_pose_preset_area_id", 3)
         self.declare_parameter("arm_pose_preset_motion_id", 1010)
         self.declare_parameter("assist_wait_seconds", 7.0)
+        self.declare_parameter("announce_enabled", False)
+        self.declare_parameter("announce_startup_text", "I'm on my way")
+        self.declare_parameter("announce_stop_text", "Hold on")
+        self.declare_parameter("announce_startup_emoji_id", 90)
+        self.declare_parameter("announce_stop_emoji_id", 200)
+        self.declare_parameter("announce_emoji_mode", 1)
+        self.declare_parameter("announce_tts_priority", 6)
+        self.declare_parameter("announce_emoji_priority", 10)
+        self.declare_parameter("announce_domain", "x2_stereo_person_follow")
         self.declare_parameter("assist_head_pat_enabled", False)
         self.declare_parameter("assist_head_pat_topic", "/x2/assist/head_pat")
         self.declare_parameter("require_waist_neutral_for_forward", False)
@@ -188,6 +213,31 @@ class X2StereoPersonFollow(Node):
         self.assist_wait_seconds = float(
             self.get_parameter("assist_wait_seconds").value
         )
+        self.announce_enabled = bool_param(
+            self.get_parameter("announce_enabled").value
+        )
+        self.announce_startup_text = str(
+            self.get_parameter("announce_startup_text").value
+        )
+        self.announce_stop_text = str(
+            self.get_parameter("announce_stop_text").value
+        )
+        self.announce_startup_emoji_id = int(
+            self.get_parameter("announce_startup_emoji_id").value
+        )
+        self.announce_stop_emoji_id = int(
+            self.get_parameter("announce_stop_emoji_id").value
+        )
+        self.announce_emoji_mode = int(
+            self.get_parameter("announce_emoji_mode").value
+        )
+        self.announce_tts_priority = int(
+            self.get_parameter("announce_tts_priority").value
+        )
+        self.announce_emoji_priority = int(
+            self.get_parameter("announce_emoji_priority").value
+        )
+        self.announce_domain = str(self.get_parameter("announce_domain").value)
         self.assist_head_pat_enabled = bool_param(
             self.get_parameter("assist_head_pat_enabled").value
         )
@@ -265,6 +315,30 @@ class X2StereoPersonFollow(Node):
             self.input_source_client = None
             self.mc_action_client = None
             self.preset_motion_client = None
+
+        self.tts_client = None
+        self.emoji_client = None
+        if self.announce_enabled and AIMDK_AVAILABLE and not self.dry_run:
+            if PLAYTTS_AVAILABLE:
+                self.tts_client = self.create_client(
+                    PlayTts,
+                    "/aimdk_5Fmsgs/srv/PlayTts",
+                    callback_group=self.cb_group,
+                )
+            else:
+                self.get_logger().warn(
+                    "PlayTts not available in aimdk_msgs; TTS announcements disabled."
+                )
+            if PLAYEMOJI_AVAILABLE:
+                self.emoji_client = self.create_client(
+                    PlayEmoji,
+                    "/face_ui_proxy/play_emoji",
+                    callback_group=self.cb_group,
+                )
+            else:
+                self.get_logger().warn(
+                    "PlayEmoji not available in aimdk_msgs; emoji announcements disabled."
+                )
 
         self.create_subscription(
             Bool,
@@ -364,6 +438,11 @@ class X2StereoPersonFollow(Node):
 
             self.enabled = True
             self.get_logger().info("Stereo person follow ENABLED; robot may move.")
+            self.announce(
+                "startup",
+                self.announce_startup_text,
+                self.announce_startup_emoji_id,
+            )
         finally:
             with self.activation_lock:
                 self.activation_in_progress = False
@@ -618,6 +697,11 @@ class X2StereoPersonFollow(Node):
             f"Arrived at person; starting timed assist wait for "
             f"{max(0.0, self.assist_wait_seconds):.2f}s."
         )
+        self.announce(
+            "stop",
+            self.announce_stop_text,
+            self.announce_stop_emoji_id,
+        )
         self.start_arm_pose_trigger()
         if self.assist_wait_seconds > 0.0:
             self.assist_wait_until = time.monotonic() + self.assist_wait_seconds
@@ -651,6 +735,105 @@ class X2StereoPersonFollow(Node):
             self.get_logger().error(
                 "Failed to re-register input source after assist wait; "
                 "follow will stay stopped until re-registration succeeds."
+            )
+
+    def announce(self, label: str, text: str, emoji_id: int) -> None:
+        """Fire-and-forget TTS + emoji. Never raises; failures only log."""
+        if not self.announce_enabled or self.dry_run:
+            return
+        threading.Thread(
+            target=self._announce_worker,
+            args=(label, text, emoji_id),
+            daemon=True,
+        ).start()
+
+    def _announce_worker(self, label: str, text: str, emoji_id: int) -> None:
+        try:
+            self._play_tts(text)
+        except Exception as exc:
+            self.get_logger().warn(
+                f"Announce TTS '{label}' failed: {exc}"
+            )
+        try:
+            self._play_emoji(emoji_id)
+        except Exception as exc:
+            self.get_logger().warn(
+                f"Announce emoji '{label}' failed: {exc}"
+            )
+
+    def _play_tts(self, text: str) -> None:
+        if self.tts_client is None or PlayTts is None:
+            return
+        if not self.tts_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warn(
+                "PlayTts service unavailable; skipping TTS."
+            )
+            return
+
+        req = PlayTts.Request()
+        req.tts_req.text = text
+        req.tts_req.domain = self.announce_domain
+        req.tts_req.trace_id = self.announce_domain
+        req.tts_req.is_interrupted = True
+        req.tts_req.priority_weight = 0
+        req.tts_req.priority_level.value = self.announce_tts_priority
+
+        future = None
+        for _ in range(8):
+            req.header.header.stamp = self.get_clock().now().to_msg()
+            future = self.tts_client.call_async(req)
+            deadline = time.monotonic() + 0.25
+            while rclpy.ok() and not future.done() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            if future.done():
+                break
+
+        if future is None or not future.done() or future.result() is None:
+            self.get_logger().warn("PlayTts call timed out.")
+            return
+
+        resp = future.result()
+        if resp.tts_resp.is_success:
+            self.get_logger().info(f"TTS played: '{text}'")
+        else:
+            self.get_logger().warn(f"TTS failed for '{text}'")
+
+    def _play_emoji(self, emoji_id: int) -> None:
+        if self.emoji_client is None or PlayEmoji is None:
+            return
+        if not self.emoji_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warn(
+                "PlayEmoji service unavailable; skipping emoji."
+            )
+            return
+
+        req = PlayEmoji.Request()
+        req.emotion_id = int(emoji_id)
+        req.mode = int(self.announce_emoji_mode)
+        req.priority = int(self.announce_emoji_priority)
+
+        future = None
+        for _ in range(8):
+            req.header.header.stamp = self.get_clock().now().to_msg()
+            future = self.emoji_client.call_async(req)
+            deadline = time.monotonic() + 0.25
+            while rclpy.ok() and not future.done() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            if future.done():
+                break
+
+        if future is None or not future.done() or future.result() is None:
+            self.get_logger().warn("PlayEmoji call timed out.")
+            return
+
+        resp = future.result()
+        if resp.success:
+            self.get_logger().info(
+                f"Emoji {emoji_id} played: {resp.message}"
+            )
+        else:
+            self.get_logger().warn(
+                f"Emoji {emoji_id} failed: {resp.message}"
             )
 
     def start_arm_pose_trigger(self) -> None:
