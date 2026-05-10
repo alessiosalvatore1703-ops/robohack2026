@@ -14,11 +14,11 @@ from vision_msgs.msg import (
     Pose2D,
 )
 
-try:
-    from cv_bridge import CvBridge
-except ImportError:
-    CvBridge = None
-
+from .image_conversion import (
+    bgr8_to_compressed_imgmsg,
+    bgr8_to_image_msg,
+    image_msg_to_bgr8,
+)
 from .yolo_wrapper import InferenceResult, YOLOWrapper
 
 
@@ -79,10 +79,6 @@ class StereoYoloDetectNode(Node):
         inference_time_topic = self.get_parameter("inference_time_topic").value
         self.jpeg_quality = self._jpeg_quality()
 
-        if CvBridge is None:
-            raise RuntimeError("cv_bridge is required for stereo_yolo_detect_node")
-        self.bridge = CvBridge()
-
         self.yolo = YOLOWrapper(
             model_path=self.get_parameter("model_path").value,
             confidence_threshold=float(
@@ -116,7 +112,7 @@ class StereoYoloDetectNode(Node):
 
     def _image_callback(self, msg: Image) -> None:
         try:
-            image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            image = image_msg_to_bgr8(msg)
         except Exception as exc:
             self.get_logger().warn(f"Image conversion failed: {exc}")
             return
@@ -212,8 +208,7 @@ class StereoYoloDetectNode(Node):
             2,
         )
 
-        out = self.bridge.cv2_to_imgmsg(annotated, encoding="bgr8")
-        out.header = header
+        out = bgr8_to_image_msg(annotated, header)
         self.annotated_pub.publish(out)
 
         compressed = self._cv2_to_compressed_imgmsg(annotated, header)
@@ -221,16 +216,11 @@ class StereoYoloDetectNode(Node):
             self.annotated_compressed_pub.publish(compressed)
 
     def _cv2_to_compressed_imgmsg(self, image, header):
-        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
-        ok, encoded = cv2.imencode(".jpg", image, encode_params)
-        if not ok:
+        msg = bgr8_to_compressed_imgmsg(
+            image, header=header, jpeg_quality=self.jpeg_quality
+        )
+        if msg is None:
             self.get_logger().warn("Failed to JPEG-encode annotated image")
-            return None
-
-        msg = CompressedImage()
-        msg.header = header
-        msg.format = "jpeg"
-        msg.data = encoded.tobytes()
         return msg
 
     def _jpeg_quality(self) -> int:

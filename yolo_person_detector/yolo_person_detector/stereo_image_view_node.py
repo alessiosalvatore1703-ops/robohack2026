@@ -7,17 +7,16 @@ subscribes to one selected stereo camera stream and republishes it on a small
 
 import time
 
-import cv2
-import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage, Image
 
-try:
-    from cv_bridge import CvBridge
-except ImportError:
-    CvBridge = None
+from .image_conversion import (
+    bgr8_to_image_msg,
+    compressed_imgmsg_to_bgr8,
+    image_msg_to_bgr8,
+)
 
 
 SENSOR_QOS = QoSProfile(
@@ -83,10 +82,6 @@ class StereoImageViewNode(Node):
             )
             self.topic_type = "rgb_image"
 
-        if CvBridge is None:
-            raise RuntimeError("cv_bridge is required for stereo_image_view_node")
-
-        self.bridge = CvBridge()
         self.image_topic = self._resolve_image_topic()
         self.frame_count = 0
         self.last_image_time = 0.0
@@ -119,62 +114,27 @@ class StereoImageViewNode(Node):
 
     def _image_callback(self, msg: Image) -> None:
         try:
-            cv_image = self._image_msg_to_bgr8(msg)
+            cv_image = image_msg_to_bgr8(msg)
         except Exception as exc:
             self.get_logger().warn(f"Failed to convert image to bgr8: {exc}")
             return
 
-        out = self.bridge.cv2_to_imgmsg(cv_image, encoding="bgr8")
-        out.header = msg.header
+        out = bgr8_to_image_msg(cv_image, msg.header)
         self._mark_frame(out.width, out.height, out.encoding, msg.encoding)
         self.image_pub.publish(out)
         self.view_pub.publish(out)
 
     def _compressed_callback(self, msg: CompressedImage) -> None:
         try:
-            cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            cv_image = compressed_imgmsg_to_bgr8(msg)
         except Exception as exc:
             self.get_logger().warn(f"Failed to decode compressed image: {exc}")
             return
 
-        out = self.bridge.cv2_to_imgmsg(cv_image, encoding="bgr8")
-        out.header = msg.header
+        out = bgr8_to_image_msg(cv_image, msg.header)
         self._mark_frame(out.width, out.height, out.encoding, msg.format)
         self.image_pub.publish(out)
         self.view_pub.publish(out)
-
-    def _image_msg_to_bgr8(self, msg: Image):
-        try:
-            return self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-        except Exception:
-            pass
-
-        encoding = msg.encoding.lower()
-        dtype = np.uint8
-        channels = 1
-        if encoding in ("mono16", "16uc1"):
-            dtype = np.uint16
-        elif encoding in ("rgb8", "bgr8"):
-            channels = 3
-        elif encoding in ("rgba8", "bgra8"):
-            channels = 4
-
-        arr = np.frombuffer(msg.data, dtype=dtype)
-        if channels == 1:
-            image = arr.reshape((msg.height, msg.width))
-            if image.dtype == np.uint16:
-                image = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX)
-                image = image.astype(np.uint8)
-            return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-
-        image = arr.reshape((msg.height, msg.width, channels))
-        if encoding == "rgb8":
-            return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-        if encoding == "rgba8":
-            return cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
-        if encoding == "bgra8":
-            return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
-        return image
 
     def _mark_frame(
         self, width: int, height: int, encoding: str, source_encoding: str

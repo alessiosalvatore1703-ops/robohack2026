@@ -93,8 +93,25 @@ source install/setup.bash
 ### Pull updates later
 
 ```bash
-cd ~/ros2_ws
+cd ~/ros2_ws/src/robohack2026
 git pull
+cd ~/ros2_ws
+colcon build --packages-select yolo_person_detector --symlink-install
+source install/setup.bash
+```
+
+If the build reports a missing launch file under
+`src/robohack2026/install/yolo_person_detector/...`, a previous build was run
+from inside the repository instead of the workspace root. Clean the stale nested
+build products, then rebuild from `~/ros2_ws`:
+
+```bash
+cd ~/ros2_ws/src/robohack2026
+rm -rf build install log
+git pull
+
+cd ~/ros2_ws
+rm -rf build/yolo_person_detector install/yolo_person_detector
 colcon build --packages-select yolo_person_detector --symlink-install
 source install/setup.bash
 ```
@@ -223,6 +240,15 @@ Source that file before running `colcon build`.
 **`vision_msgs` error during build**
 ```bash
 sudo apt install -y ros-humble-vision-msgs
+```
+
+**`cv_bridge` crashes with NumPy 2.x**
+ROS Humble's `cv_bridge` is usually built against NumPy 1.x. If you see
+`AttributeError: _ARRAY_API not found`, either use the stereo launch files in
+this repo, which avoid `cv_bridge`, or pin the robot Python environment back to
+NumPy 1.x:
+```bash
+pip3 install --user "numpy<2"
 ```
 
 **Robot doesn't move with `follower_enabled:=true`**
