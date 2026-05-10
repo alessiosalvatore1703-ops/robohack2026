@@ -14,6 +14,11 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 try:
+    import ruckig
+except ImportError:
+    ruckig = None
+
+try:
     from aimdk_msgs.msg import (
         JointCommand,
         JointCommandArray,
@@ -97,9 +102,12 @@ class X2HeadYawTracker(Node):
         self.declare_parameter("dry_run", False)
         self.declare_parameter("yaw_gain", 0.6)
         self.declare_parameter("center_deadzone_deg", 2.0)
-        self.declare_parameter("max_yaw_velocity", 0.15)
+        self.declare_parameter("use_ruckig", True)
+        self.declare_parameter("max_yaw_velocity", 1.0)
+        self.declare_parameter("max_yaw_acceleration", 1.0)
+        self.declare_parameter("max_yaw_jerk", 25.0)
         self.declare_parameter("target_timeout_sec", 0.5)
-        self.declare_parameter("control_rate_hz", 30.0)
+        self.declare_parameter("control_rate_hz", 500.0)
         self.declare_parameter("hold_on_lost", True)
         self.declare_parameter("invert_yaw", False)
         self.declare_parameter("soft_limit_deg", 20.0)
@@ -114,7 +122,12 @@ class X2HeadYawTracker(Node):
         self.center_deadzone_rad = math.radians(
             float(self.get_parameter("center_deadzone_deg").value)
         )
+        self.use_ruckig = bool_param(self.get_parameter("use_ruckig").value)
         self.max_yaw_velocity = float(self.get_parameter("max_yaw_velocity").value)
+        self.max_yaw_acceleration = float(
+            self.get_parameter("max_yaw_acceleration").value
+        )
+        self.max_yaw_jerk = float(self.get_parameter("max_yaw_jerk").value)
         self.target_timeout_sec = float(self.get_parameter("target_timeout_sec").value)
         self.control_rate_hz = float(self.get_parameter("control_rate_hz").value)
         self.control_period_sec = 1.0 / max(self.control_rate_hz, 0.1)
@@ -136,9 +149,30 @@ class X2HeadYawTracker(Node):
         self.command_positions: Optional[list[float]] = None
         self.last_target_bearing_rad: Optional[float] = None
         self.target_yaw_position: Optional[float] = None
+        self.ruckig_controller = None
+        self.ruckig_input = None
+        self.ruckig_output = None
+        self.ruckig_initialized = False
         self.last_target_time = -float("inf")
         self.last_state_warning = 0.0
         self.last_dry_run_log = 0.0
+        self.last_ruckig_warning = 0.0
+
+        if self.use_ruckig:
+            if ruckig is None:
+                self.get_logger().warn(
+                    "ruckig is not installed; using velocity-limited fallback."
+                )
+                self.use_ruckig = False
+            else:
+                self.ruckig_controller = ruckig.Ruckig(
+                    len(HEAD_JOINTS), self.control_period_sec
+                )
+                self.ruckig_input = ruckig.InputParameter(len(HEAD_JOINTS))
+                self.ruckig_output = ruckig.OutputParameter(len(HEAD_JOINTS))
+                self.ruckig_input.max_velocity = self.ruckig_max_velocity()
+                self.ruckig_input.max_acceleration = self.ruckig_max_acceleration()
+                self.ruckig_input.max_jerk = self.ruckig_max_jerk()
 
         self.create_subscription(
             PointStamped,
@@ -163,8 +197,9 @@ class X2HeadYawTracker(Node):
             "Head yaw tracker started: "
             f"target={self.target_topic}, state={self.head_state_topic}, "
             f"command={self.head_command_topic}, enabled={self.enabled}, "
-            f"dry_run={self.dry_run}, yaw_limits=[{self.yaw_lower_limit:.3f}, "
-            f"{self.yaw_upper_limit:.3f}]"
+            f"dry_run={self.dry_run}, use_ruckig={self.use_ruckig}, "
+            f"period={self.control_period_sec:.4f}s, "
+            f"yaw_limits=[{self.yaw_lower_limit:.3f}, {self.yaw_upper_limit:.3f}]"
         )
 
     def target_callback(self, msg: PointStamped) -> None:
@@ -208,6 +243,25 @@ class X2HeadYawTracker(Node):
         self.head_positions = self.clamp_head_positions(self.head_positions)
         if self.command_positions is None:
             self.command_positions = list(self.head_positions)
+        if self.use_ruckig and not self.ruckig_initialized:
+            self.initialize_ruckig()
+
+    def initialize_ruckig(self) -> None:
+        if (
+            self.ruckig_input is None
+            or self.head_positions is None
+            or self.head_velocities is None
+        ):
+            return
+
+        self.ruckig_input.current_position = list(self.head_positions)
+        self.ruckig_input.current_velocity = list(self.head_velocities)
+        self.ruckig_input.current_acceleration = [0.0] * len(HEAD_JOINTS)
+        self.ruckig_input.target_position = list(self.head_positions)
+        self.ruckig_input.target_velocity = [0.0] * len(HEAD_JOINTS)
+        self.ruckig_input.target_acceleration = [0.0] * len(HEAD_JOINTS)
+        self.ruckig_initialized = True
+        self.get_logger().info("Ruckig head tracker initialized from joint state.")
 
     def control_loop(self) -> None:
         if not self.enabled:
@@ -242,7 +296,10 @@ class X2HeadYawTracker(Node):
         target_positions = list(start_positions)
         target_positions[HEAD_YAW_INDEX] = self.target_yaw_position
 
-        next_positions, velocities = self.next_head_step(target_positions)
+        if self.use_ruckig:
+            next_positions, velocities = self.next_ruckig_step(target_positions)
+        else:
+            next_positions, velocities = self.next_head_step(target_positions)
         self.publish_head_command(next_positions, velocities)
         self.command_positions = list(next_positions)
 
@@ -259,6 +316,46 @@ class X2HeadYawTracker(Node):
             self.yaw_lower_limit,
             self.yaw_upper_limit,
         )
+
+    def next_ruckig_step(
+        self, target_positions: list[float]
+    ) -> tuple[list[float], list[float]]:
+        if (
+            self.ruckig_controller is None
+            or self.ruckig_input is None
+            or self.ruckig_output is None
+            or not self.ruckig_initialized
+        ):
+            return self.next_head_step(target_positions)
+
+        target_positions = self.clamp_head_positions(target_positions)
+        self.ruckig_input.target_position = target_positions
+        self.ruckig_input.target_velocity = [0.0] * len(HEAD_JOINTS)
+        self.ruckig_input.target_acceleration = [0.0] * len(HEAD_JOINTS)
+        self.ruckig_input.max_velocity = self.ruckig_max_velocity()
+        self.ruckig_input.max_acceleration = self.ruckig_max_acceleration()
+        self.ruckig_input.max_jerk = self.ruckig_max_jerk()
+
+        result = self.ruckig_controller.update(
+            self.ruckig_input, self.ruckig_output
+        )
+        if result not in [ruckig.Result.Working, ruckig.Result.Finished]:
+            now = time.monotonic()
+            if now - self.last_ruckig_warning > 3.0:
+                self.last_ruckig_warning = now
+                self.get_logger().warn(
+                    "Ruckig head tracker step failed; using velocity-limited fallback."
+                )
+            return self.next_head_step(target_positions)
+
+        positions = self.clamp_head_positions(list(self.ruckig_output.new_position))
+        velocities = list(self.ruckig_output.new_velocity)
+        self.ruckig_input.current_position = positions
+        self.ruckig_input.current_velocity = velocities
+        self.ruckig_input.current_acceleration = list(
+            self.ruckig_output.new_acceleration
+        )
+        return positions, velocities
 
     def next_head_step(
         self, target_positions: list[float]
@@ -283,6 +380,15 @@ class X2HeadYawTracker(Node):
             for i in range(len(HEAD_JOINTS))
         ]
         return positions, velocities
+
+    def ruckig_max_velocity(self) -> list[float]:
+        return [self.max_yaw_velocity, self.max_yaw_velocity]
+
+    def ruckig_max_acceleration(self) -> list[float]:
+        return [self.max_yaw_acceleration, self.max_yaw_acceleration]
+
+    def ruckig_max_jerk(self) -> list[float]:
+        return [self.max_yaw_jerk, self.max_yaw_jerk]
 
     def publish_head_command(
         self, positions: list[float], velocities: Optional[list[float]] = None

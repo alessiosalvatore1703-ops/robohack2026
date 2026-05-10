@@ -32,7 +32,10 @@ def generate_launch_description():
     dry_run = LaunchConfiguration("dry_run")
     yaw_gain = LaunchConfiguration("yaw_gain")
     center_deadzone_deg = LaunchConfiguration("center_deadzone_deg")
+    use_ruckig = LaunchConfiguration("use_ruckig")
     max_yaw_velocity = LaunchConfiguration("max_yaw_velocity")
+    max_yaw_acceleration = LaunchConfiguration("max_yaw_acceleration")
+    max_yaw_jerk = LaunchConfiguration("max_yaw_jerk")
     target_timeout_sec = LaunchConfiguration("target_timeout_sec")
     control_rate_hz = LaunchConfiguration("control_rate_hz")
     hold_on_lost = LaunchConfiguration("hold_on_lost")
@@ -157,9 +160,24 @@ def generate_launch_description():
                 description="Ignore target bearings smaller than this.",
             ),
             DeclareLaunchArgument(
+                "use_ruckig",
+                default_value="true",
+                description="Use Ruckig trajectory planning for head yaw commands.",
+            ),
+            DeclareLaunchArgument(
                 "max_yaw_velocity",
-                default_value="0.15",
+                default_value="1.0",
                 description="Maximum commanded head yaw speed in rad/s.",
+            ),
+            DeclareLaunchArgument(
+                "max_yaw_acceleration",
+                default_value="1.0",
+                description="Maximum commanded head yaw acceleration in rad/s^2.",
+            ),
+            DeclareLaunchArgument(
+                "max_yaw_jerk",
+                default_value="25.0",
+                description="Maximum commanded head yaw jerk in rad/s^3.",
             ),
             DeclareLaunchArgument(
                 "target_timeout_sec",
@@ -168,7 +186,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "control_rate_hz",
-                default_value="30.0",
+                default_value="500.0",
                 description="Head controller update rate.",
             ),
             DeclareLaunchArgument(
@@ -229,8 +247,15 @@ def generate_launch_description():
                         "center_deadzone_deg": ParameterValue(
                             center_deadzone_deg, value_type=float
                         ),
+                        "use_ruckig": ParameterValue(use_ruckig, value_type=bool),
                         "max_yaw_velocity": ParameterValue(
                             max_yaw_velocity, value_type=float
+                        ),
+                        "max_yaw_acceleration": ParameterValue(
+                            max_yaw_acceleration, value_type=float
+                        ),
+                        "max_yaw_jerk": ParameterValue(
+                            max_yaw_jerk, value_type=float
                         ),
                         "target_timeout_sec": ParameterValue(
                             target_timeout_sec, value_type=float
