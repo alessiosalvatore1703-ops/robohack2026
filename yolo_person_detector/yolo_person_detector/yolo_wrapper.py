@@ -16,6 +16,11 @@ try:
 except ImportError:
     YOLO = None
 
+try:
+    import torch
+except ImportError:
+    torch = None
+
 
 @dataclass
 class Detection:
@@ -71,11 +76,25 @@ class YOLOWrapper:
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
         self.nms_threshold = nms_threshold
-        self.device = device
+        self.requested_device = device
+        self.device = self._resolve_device(device)
         self.input_size = input_size
         self.model: Optional[YOLO] = None
 
         self._load_model()
+
+    def _resolve_device(self, device: str) -> str:
+        """Return a usable inference device, falling back from CUDA to CPU."""
+        requested = str(device).strip().lower()
+        if requested in ("cuda", "cuda:0", "0"):
+            if torch is None or not torch.cuda.is_available():
+                print(
+                    "CUDA requested for YOLO, but torch cannot use CUDA on this "
+                    "system. Falling back to CPU.",
+                    flush=True,
+                )
+                return "cpu"
+        return device
 
     def _load_model(self) -> None:
         """Load the YOLO model from disk."""

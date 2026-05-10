@@ -158,9 +158,12 @@ JPEG stream:
 
 ```bash
 ros2 launch yolo_person_detector stereo_person_pipeline.launch.py \
-    device:=cuda \
+    device:=cpu \
     confidence:=0.5
 ```
+
+Use `device:=cuda` only if `python3 -c "import torch; print(torch.cuda.is_available())"`
+prints `True` on the robot.
 
 Monitor the final stream on the robot:
 
