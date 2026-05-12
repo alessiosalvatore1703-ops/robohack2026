@@ -1,0 +1,22 @@
+arm_pose:
+  ros__parameters:
+    auto_start: true
+    trigger_topic: /x2/assist/raise_arms_trigger
+    run_once: true
+    shoulder_pitch_deg: 10.0
+    shoulder_roll_deg: 0.0
+    shoulder_yaw_deg: 0.0
+    elbow_bend_deg: 90.0
+    move_seconds: 3.0
+    hold_indefinitely: true
+    hold_seconds: 0.0
+    release_seconds: 0.0
+    move_stiffness: 8.0
+    move_damping: 0.8
+    hold_stiffness: 8.0
+    hold_damping: 0.8
+    require_no_other_arm_publishers: true
+    require_balanced_mode: true
+    require_balanced_status: false
+    control_hz: 200.0
+    arm_state_timeout_s: 5.0
